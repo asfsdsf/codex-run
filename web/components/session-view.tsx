@@ -12,6 +12,11 @@ interface SessionViewProps {
   sessionId: string;
 }
 
+interface ConversationStreamPayload {
+  messages: ConversationMessage[];
+  nextOffset: number;
+}
+
 function SessionView(props: SessionViewProps) {
   const { sessionId } = props;
 
@@ -43,15 +48,24 @@ function SessionView(props: SessionViewProps) {
 
     eventSource.addEventListener("messages", (event) => {
       retryCountRef.current = 0;
-      const newMessages: ConversationMessage[] = JSON.parse(event.data);
+      const payload: ConversationStreamPayload | ConversationMessage[] = JSON.parse(
+        event.data
+      );
+      const newMessages = Array.isArray(payload)
+        ? payload
+        : payload.messages;
+
+      if (!Array.isArray(payload) && Number.isFinite(payload.nextOffset)) {
+        offsetRef.current = payload.nextOffset;
+      }
+
       setLoading(false);
       setMessages((prev) => {
         const existingIds = new Set(prev.map((m) => m.uuid).filter(Boolean));
         const unique = newMessages.filter((m) => !existingIds.has(m.uuid));
-        if (unique.length === 0) {
+        if (unique.length === 0 && !Array.isArray(payload)) {
           return prev;
         }
-        offsetRef.current += unique.length;
         return [...prev, ...unique];
       });
     });

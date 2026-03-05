@@ -184,11 +184,11 @@ Exit criteria:
 
 ## Phase 2: Codex Session Index + Session List
 
-- `[ ]` Build Codex file index from `~/.codex/sessions/**/**/**/*.jsonl`
-- `[ ]` Parse `session_meta` for `id`, `cwd`, session timestamp metadata
-- `[ ]` Parse `~/.codex/history.jsonl` and aggregate latest prompt per session
-- `[ ]` Merge history-backed + file-only sessions
-- `[ ]` Implement `getProjects()` from indexed `cwd`
+- `[x]` Build Codex file index from `~/.codex/sessions/**/**/**/*.jsonl`
+- `[x]` Parse `session_meta` for `id`, `cwd`, session timestamp metadata
+- `[x]` Parse `~/.codex/history.jsonl` and aggregate latest prompt per session
+- `[x]` Merge history-backed + file-only sessions
+- `[x]` Implement `getProjects()` from indexed `cwd`
 
 Exit criteria:
 
@@ -198,10 +198,10 @@ Exit criteria:
 
 ## Phase 3: Codex Conversation Parser
 
-- `[ ]` Parse `response_item.message` for user/assistant text blocks
-- `[ ]` Build tool_use/result blocks from function/custom tool call pairs
-- `[ ]` Add safe parsing for unknown payload types (do not crash)
-- `[ ]` Add truncation/sanitization guardrails for very large tool outputs
+- `[x]` Parse `response_item.message` for user/assistant text blocks
+- `[x]` Build tool_use/result blocks from function/custom tool call pairs
+- `[x]` Add safe parsing for unknown payload types (do not crash)
+- `[x]` Add truncation/sanitization guardrails for very large tool outputs
 
 Exit criteria:
 
@@ -210,10 +210,10 @@ Exit criteria:
 
 ## Phase 4: Watcher + Realtime Streaming
 
-- `[ ]` Watch `~/.codex/history.jsonl` and `~/.codex/sessions/` recursively
-- `[ ]` Detect new day directories and new files automatically
-- `[ ]` Map changed file -> session id reliably
-- `[ ]` Fix/align stream reconnect offset handling to byte offsets
+- `[x]` Watch `~/.codex/history.jsonl` and `~/.codex/sessions/` recursively
+- `[x]` Detect new day directories and new files automatically
+- `[x]` Map changed file -> session id reliably
+- `[x]` Fix/align stream reconnect offset handling to byte offsets
 
 Exit criteria:
 
@@ -223,10 +223,10 @@ Exit criteria:
 
 ## Phase 5: UI/UX Codex Adaptation
 
-- `[ ]` Update resume button command to Codex format
-- `[ ]` Validate with real CLI help contract (`codex resume [SESSION_ID]`)
-- `[ ]` Update labels from Claude-specific wording where needed
-- `[ ]` Keep current visual style unless explicitly changing design
+- `[x]` Update resume button command to Codex format
+- `[x]` Validate with real CLI help contract (`codex resume [SESSION_ID]`)
+- `[x]` Update labels from Claude-specific wording where needed
+- `[x]` Keep current visual style unless explicitly changing design
 
 Exit criteria:
 
@@ -246,7 +246,7 @@ Exit criteria:
 
 ## Phase 7: Verification and Rollout
 
-- `[ ]` Run `pnpm build`
+- `[x]` Run `pnpm build`
 - `[ ]` Manual verify with existing Codex data:
 - `[ ]` Session list loads
 - `[ ]` Search/filter works

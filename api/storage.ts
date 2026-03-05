@@ -1,13 +1,12 @@
 import { readdir, readFile, stat, open } from "fs/promises";
-import { join, basename } from "path";
+import { basename, join } from "path";
 import { homedir } from "os";
 import { createInterface } from "readline";
 
 export interface HistoryEntry {
-  display: string;
+  sessionId: string;
   timestamp: number;
-  project: string;
-  sessionId?: string;
+  text: string;
 }
 
 export interface Session {
@@ -57,19 +56,56 @@ export interface StreamResult {
   nextOffset: number;
 }
 
-let claudeDir = join(homedir(), ".claude");
-let projectsDir = join(claudeDir, "projects");
+interface SessionMeta {
+  id: string;
+  cwd: string;
+  timestamp: number;
+}
+
+interface SessionHistory {
+  timestamp: number;
+  text: string;
+}
+
+interface LineWithOffset {
+  line: string;
+  offset: number;
+}
+
+interface PendingToolUse {
+  callId: string;
+  name: string;
+  input: Record<string, unknown>;
+  timestamp?: string;
+  lineOffset: number;
+}
+
+const TOOL_RESULT_MAX_LENGTH = 200_000;
+
+let codexDir = join(homedir(), ".codex");
+let codexHistoryPath = join(codexDir, "history.jsonl");
+let codexSessionsDir = join(codexDir, "sessions");
+
 const fileIndex = new Map<string, string>();
-let historyCache: HistoryEntry[] | null = null;
+const sessionMetaIndex = new Map<string, SessionMeta>();
+const sessionDisplayCache = new Map<string, string>();
+let historyCache: Map<string, SessionHistory> | null = null;
+
 const pendingRequests = new Map<string, Promise<unknown>>();
 
 export function initStorage(dir?: string): void {
-  claudeDir = dir ?? join(homedir(), ".claude");
-  projectsDir = join(claudeDir, "projects");
+  codexDir = dir ?? join(homedir(), ".codex");
+  codexHistoryPath = join(codexDir, "history.jsonl");
+  codexSessionsDir = join(codexDir, "sessions");
 }
 
+export function getCodexDir(): string {
+  return codexDir;
+}
+
+// Backward-compatible export to avoid breaking existing imports.
 export function getClaudeDir(): string {
-  return claudeDir;
+  return getCodexDir();
 }
 
 export function invalidateHistoryCache(): void {
@@ -78,10 +114,8 @@ export function invalidateHistoryCache(): void {
 
 export function addToFileIndex(sessionId: string, filePath: string): void {
   fileIndex.set(sessionId, filePath);
-}
-
-function encodeProjectPath(path: string): string {
-  return path.replace(/[/.]/g, "-");
+  sessionDisplayCache.delete(sessionId);
+  void hydrateSessionMeta(sessionId, filePath);
 }
 
 function getProjectName(projectPath: string): string {
@@ -89,53 +123,209 @@ function getProjectName(projectPath: string): string {
   return parts[parts.length - 1] || projectPath;
 }
 
-async function buildFileIndex(): Promise<void> {
-  try {
-    const projectDirs = await readdir(projectsDir, { withFileTypes: true });
-    const directories = projectDirs.filter((d) => d.isDirectory());
+function normalizeDisplayText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "(no prompt text)";
+  }
+  return normalized.length > 240 ? `${normalized.slice(0, 240)}...` : normalized;
+}
 
-    await Promise.all(
-      directories.map(async (dir) => {
-        try {
-          const projectPath = join(projectsDir, dir.name);
-          const files = await readdir(projectPath);
-          for (const file of files) {
-            if (file.endsWith(".jsonl")) {
-              const sessionId = basename(file, ".jsonl");
-              fileIndex.set(sessionId, join(projectPath, file));
-            }
-          }
-        } catch {
-          // Ignore errors for individual directories
-        }
-      })
-    );
+function extractSessionIdFromPath(filePath: string): string | null {
+  const name = basename(filePath);
+  const match = name.match(
+    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+  );
+  return match?.[1] ?? null;
+}
+
+function parseTimestamp(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber)) {
+      return asNumber;
+    }
+    const asDate = Date.parse(value);
+    if (!Number.isNaN(asDate)) {
+      return asDate;
+    }
+  }
+  return 0;
+}
+
+function safeJsonParse(input: string): unknown {
+  try {
+    return JSON.parse(input);
   } catch {
-    // Projects directory may not exist yet
+    return null;
   }
 }
 
-async function loadHistoryCache(): Promise<HistoryEntry[]> {
+async function readFirstLine(filePath: string): Promise<string | null> {
+  let fileHandle;
   try {
-    const historyPath = join(claudeDir, "history.jsonl");
-    const content = await readFile(historyPath, "utf-8");
-    const lines = content.trim().split("\n").filter(Boolean);
-    const entries: HistoryEntry[] = [];
+    fileHandle = await open(filePath, "r");
+    const stream = fileHandle.createReadStream({
+      start: 0,
+      end: 64 * 1024,
+      encoding: "utf-8",
+    });
 
-    for (const line of lines) {
-      try {
-        entries.push(JSON.parse(line));
-      } catch {
-        // Skip malformed lines
-      }
+    const rl = createInterface({
+      input: stream,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      return line;
     }
 
-    historyCache = entries;
-    return entries;
+    return null;
   } catch {
-    historyCache = [];
-    return [];
+    return null;
+  } finally {
+    if (fileHandle) {
+      await fileHandle.close();
+    }
   }
+}
+
+function parseSessionMetaLine(line: string): SessionMeta | null {
+  const parsed = safeJsonParse(line);
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  const record = parsed as { type?: string; payload?: Record<string, unknown> };
+  if (record.type !== "session_meta" || !record.payload) {
+    return null;
+  }
+
+  const id =
+    typeof record.payload.id === "string" ? record.payload.id.trim() : "";
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    cwd:
+      typeof record.payload.cwd === "string" ? record.payload.cwd.trim() : "",
+    timestamp: parseTimestamp(record.payload.timestamp),
+  };
+}
+
+async function readSessionMetaFromFile(filePath: string): Promise<SessionMeta | null> {
+  const firstLine = await readFirstLine(filePath);
+  if (!firstLine) {
+    return null;
+  }
+  return parseSessionMetaLine(firstLine);
+}
+
+async function hydrateSessionMeta(sessionId: string, filePath: string): Promise<void> {
+  if (sessionMetaIndex.has(sessionId)) {
+    return;
+  }
+
+  const meta = await readSessionMetaFromFile(filePath);
+  if (meta) {
+    sessionMetaIndex.set(sessionId, meta);
+  }
+}
+
+async function collectSessionFiles(dirPath: string, output: string[]): Promise<void> {
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        await collectSessionFiles(fullPath, output);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        output.push(fullPath);
+      }
+    }
+  } catch {
+    // Session directory may not exist yet.
+  }
+}
+
+async function buildFileIndex(): Promise<void> {
+  fileIndex.clear();
+  sessionMetaIndex.clear();
+
+  const files: string[] = [];
+  await collectSessionFiles(codexSessionsDir, files);
+
+  for (const filePath of files) {
+    const fileSessionId = extractSessionIdFromPath(filePath);
+
+    let sessionId = fileSessionId;
+    const meta = await readSessionMetaFromFile(filePath);
+    if (meta) {
+      sessionMetaIndex.set(meta.id, meta);
+      sessionId = meta.id;
+    }
+
+    if (sessionId) {
+      fileIndex.set(sessionId, filePath);
+    }
+  }
+}
+
+async function loadHistoryCache(): Promise<Map<string, SessionHistory>> {
+  const cache = new Map<string, SessionHistory>();
+
+  try {
+    const content = await readFile(codexHistoryPath, "utf-8");
+    const lines = content.split("\n");
+
+    for (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      const parsed = safeJsonParse(line);
+      if (!parsed || typeof parsed !== "object") {
+        continue;
+      }
+
+      const entry = parsed as {
+        session_id?: unknown;
+        ts?: unknown;
+        text?: unknown;
+      };
+
+      if (typeof entry.session_id !== "string" || !entry.session_id.trim()) {
+        continue;
+      }
+
+      const ts = parseTimestamp(entry.ts);
+      if (!Number.isFinite(ts) || ts <= 0) {
+        continue;
+      }
+
+      const current = cache.get(entry.session_id);
+      if (current && current.timestamp > ts) {
+        continue;
+      }
+
+      cache.set(entry.session_id, {
+        timestamp: ts,
+        text: typeof entry.text === "string" ? entry.text : "",
+      });
+    }
+  } catch {
+    // History file may not exist yet.
+  }
+
+  historyCache = cache;
+  return cache;
 }
 
 async function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -152,80 +342,393 @@ async function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return promise;
 }
 
-async function findSessionByTimestamp(
-  encodedProject: string,
-  timestamp: number
-): Promise<string | undefined> {
-  try {
-    const projectPath = join(projectsDir, encodedProject);
-    const files = await readdir(projectPath);
-    const jsonlFiles = files.filter((f) => f.endsWith(".jsonl"));
-
-    const fileStats = await Promise.all(
-      jsonlFiles.map(async (file) => {
-        const filePath = join(projectPath, file);
-        const fileStat = await stat(filePath);
-        return { file, mtime: fileStat.mtimeMs };
-      })
-    );
-
-    let closestFile: string | null = null;
-    let closestTimeDiff = Infinity;
-
-    for (const { file, mtime } of fileStats) {
-      const timeDiff = Math.abs(mtime - timestamp);
-      if (timeDiff < closestTimeDiff) {
-        closestTimeDiff = timeDiff;
-        closestFile = file;
-      }
-    }
-
-    if (closestFile) {
-      return basename(closestFile, ".jsonl");
-    }
-  } catch {
-    // Project directory doesn't exist
-  }
-
-  return undefined;
-}
-
 async function findSessionFile(sessionId: string): Promise<string | null> {
   if (fileIndex.has(sessionId)) {
     return fileIndex.get(sessionId)!;
   }
 
-  const targetFile = `${sessionId}.jsonl`;
-
-  try {
-    const projectDirs = await readdir(projectsDir, { withFileTypes: true });
-    const directories = projectDirs.filter((d) => d.isDirectory());
-
-    const results = await Promise.all(
-      directories.map(async (dir) => {
-        try {
-          const projectPath = join(projectsDir, dir.name);
-          const files = await readdir(projectPath);
-          if (files.includes(targetFile)) {
-            return join(projectPath, targetFile);
-          }
-        } catch {
-          // Ignore errors for individual directories
-        }
-        return null;
-      })
-    );
-
-    const filePath = results.find((r) => r !== null);
-    if (filePath) {
-      fileIndex.set(sessionId, filePath);
-      return filePath;
-    }
-  } catch (err) {
-    console.error("Error finding session file:", err);
+  await buildFileIndex();
+  if (fileIndex.has(sessionId)) {
+    return fileIndex.get(sessionId)!;
   }
 
   return null;
+}
+
+function truncateToolResult(content: string): string {
+  if (content.length <= TOOL_RESULT_MAX_LENGTH) {
+    return content;
+  }
+
+  const omitted = content.length - TOOL_RESULT_MAX_LENGTH;
+  return `${content.slice(0, TOOL_RESULT_MAX_LENGTH)}\n... [truncated ${omitted} chars]`;
+}
+
+function toToolInput(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === "string") {
+    const parsed = safeJsonParse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return { raw: value };
+  }
+  if (value === undefined) {
+    return {};
+  }
+  return { value };
+}
+
+function toToolOutputContent(value: unknown): string {
+  if (typeof value === "string") {
+    return truncateToolResult(value);
+  }
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  try {
+    return truncateToolResult(JSON.stringify(value, null, 2));
+  } catch {
+    return truncateToolResult(String(value));
+  }
+}
+
+function createTextMessage(
+  role: "user" | "assistant",
+  text: string,
+  uuid: string,
+  timestamp?: string,
+): ConversationMessage {
+  return {
+    type: role,
+    uuid,
+    timestamp,
+    message: {
+      role,
+      content: [
+        {
+          type: "text",
+          text,
+        },
+      ],
+    },
+  };
+}
+
+function createToolMessage(
+  toolUse: PendingToolUse,
+  uuid: string,
+  result?: { content: string; isError?: boolean },
+): ConversationMessage {
+  const content: ContentBlock[] = [
+    {
+      type: "tool_use",
+      id: toolUse.callId,
+      name: toolUse.name,
+      input: toolUse.input,
+    },
+  ];
+
+  if (result) {
+    content.push({
+      type: "tool_result",
+      tool_use_id: toolUse.callId,
+      content: result.content,
+      is_error: result.isError,
+    });
+  }
+
+  return {
+    type: "assistant",
+    uuid,
+    timestamp: toolUse.timestamp,
+    message: {
+      role: "assistant",
+      content,
+    },
+  };
+}
+
+function createToolResultOnlyMessage(
+  callId: string,
+  content: string,
+  uuid: string,
+  timestamp?: string,
+  isError?: boolean,
+): ConversationMessage {
+  return {
+    type: "assistant",
+    uuid,
+    timestamp,
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: callId,
+          content,
+          is_error: isError,
+        },
+      ],
+    },
+  };
+}
+
+function extractTextFromPayloadContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const parts: string[] = [];
+
+  for (const item of content) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const block = item as { type?: unknown; text?: unknown };
+    if (
+      (block.type === "input_text" || block.type === "output_text") &&
+      typeof block.text === "string"
+    ) {
+      parts.push(block.text);
+    }
+  }
+
+  return parts.join("\n\n").trim();
+}
+
+function parseToolUseFromPayload(
+  payload: Record<string, unknown>,
+  timestamp: string | undefined,
+  offset: number,
+): PendingToolUse {
+  const payloadType = typeof payload.type === "string" ? payload.type : "";
+
+  let input: Record<string, unknown> = {};
+  if (payloadType === "function_call") {
+    input = toToolInput(payload.arguments);
+  } else if (payloadType === "custom_tool_call") {
+    input = toToolInput(payload.input);
+  } else if (payloadType === "web_search_call") {
+    input = toToolInput(payload.action);
+  }
+
+  const name =
+    payloadType === "web_search_call"
+      ? "web_search"
+      : typeof payload.name === "string"
+        ? payload.name
+        : "unknown_tool";
+
+  const callId =
+    typeof payload.call_id === "string" && payload.call_id
+      ? payload.call_id
+      : `${name}-${offset}`;
+
+  return {
+    callId,
+    name,
+    input,
+    timestamp,
+    lineOffset: offset,
+  };
+}
+
+function parseToolResultFromPayload(payload: Record<string, unknown>): {
+  callId: string;
+  content: string;
+  isError?: boolean;
+} {
+  const callId =
+    typeof payload.call_id === "string" && payload.call_id
+      ? payload.call_id
+      : `unknown-call-${Date.now()}`;
+
+  const isError =
+    typeof payload.is_error === "boolean"
+      ? payload.is_error
+      : typeof payload.error === "boolean"
+        ? payload.error
+        : undefined;
+
+  return {
+    callId,
+    content: toToolOutputContent(payload.output),
+    isError,
+  };
+}
+
+function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] {
+  const messages: ConversationMessage[] = [];
+  const pendingToolCalls = new Map<string, PendingToolUse>();
+
+  for (const { line, offset } of lines) {
+    const parsed = safeJsonParse(line);
+    if (!parsed || typeof parsed !== "object") {
+      continue;
+    }
+
+    const record = parsed as {
+      type?: unknown;
+      timestamp?: unknown;
+      payload?: unknown;
+    };
+
+    if (
+      record.type !== "response_item" ||
+      !record.payload ||
+      typeof record.payload !== "object"
+    ) {
+      continue;
+    }
+
+    const payload = record.payload as Record<string, unknown>;
+    const payloadType = typeof payload.type === "string" ? payload.type : "";
+    const timestamp =
+      typeof record.timestamp === "string" ? record.timestamp : undefined;
+
+    if (payloadType === "message") {
+      const role = payload.role;
+      if (role !== "user" && role !== "assistant") {
+        continue;
+      }
+
+      const text = extractTextFromPayloadContent(payload.content);
+      if (!text) {
+        continue;
+      }
+
+      messages.push(
+        createTextMessage(role, text, `${offset}:message:${messages.length}`, timestamp),
+      );
+      continue;
+    }
+
+    if (
+      payloadType === "function_call" ||
+      payloadType === "custom_tool_call" ||
+      payloadType === "web_search_call"
+    ) {
+      const toolUse = parseToolUseFromPayload(payload, timestamp, offset);
+      pendingToolCalls.set(toolUse.callId, toolUse);
+
+      // Web search may not emit a separate output item, so include status if available.
+      if (payloadType === "web_search_call" && payload.status !== undefined) {
+        messages.push(
+          createToolMessage(toolUse, `${offset}:tool:${messages.length}`, {
+            content: toToolOutputContent(payload.status),
+          }),
+        );
+        pendingToolCalls.delete(toolUse.callId);
+      }
+      continue;
+    }
+
+    if (
+      payloadType === "function_call_output" ||
+      payloadType === "custom_tool_call_output"
+    ) {
+      const result = parseToolResultFromPayload(payload);
+      const pairedToolUse = pendingToolCalls.get(result.callId);
+
+      if (pairedToolUse) {
+        messages.push(
+          createToolMessage(
+            pairedToolUse,
+            `${offset}:tool-pair:${messages.length}`,
+            {
+              content: result.content,
+              isError: result.isError,
+            },
+          ),
+        );
+        pendingToolCalls.delete(result.callId);
+      } else {
+        messages.push(
+          createToolResultOnlyMessage(
+            result.callId,
+            result.content,
+            `${offset}:tool-result:${messages.length}`,
+            timestamp,
+            result.isError,
+          ),
+        );
+      }
+      continue;
+    }
+  }
+
+  for (const toolUse of pendingToolCalls.values()) {
+    messages.push(
+      createToolMessage(toolUse, `${toolUse.lineOffset}:tool-pending:${messages.length}`),
+    );
+  }
+
+  return messages;
+}
+
+async function getFirstUserMessageSnippet(filePath: string): Promise<string> {
+  let fileHandle;
+  try {
+    fileHandle = await open(filePath, "r");
+    const stream = fileHandle.createReadStream({ encoding: "utf-8" });
+    const rl = createInterface({
+      input: stream,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      const parsed = safeJsonParse(line);
+      if (!parsed || typeof parsed !== "object") {
+        continue;
+      }
+
+      const record = parsed as {
+        type?: unknown;
+        payload?: unknown;
+      };
+
+      if (
+        record.type !== "response_item" ||
+        !record.payload ||
+        typeof record.payload !== "object"
+      ) {
+        continue;
+      }
+
+      const payload = record.payload as Record<string, unknown>;
+      if (payload.type !== "message" || payload.role !== "user") {
+        continue;
+      }
+
+      const text = extractTextFromPayloadContent(payload.content);
+      if (!text) {
+        continue;
+      }
+
+      return normalizeDisplayText(text);
+    }
+  } catch {
+    // Ignore read errors and fallback to default display value below.
+  } finally {
+    if (fileHandle) {
+      await fileHandle.close();
+    }
+  }
+
+  return "(no prompt text)";
 }
 
 export async function loadStorage(): Promise<void> {
@@ -234,28 +737,67 @@ export async function loadStorage(): Promise<void> {
 
 export async function getSessions(): Promise<Session[]> {
   return dedupe("getSessions", async () => {
-    const entries = historyCache ?? (await loadHistoryCache());
+    const history = historyCache ?? (await loadHistoryCache());
+
+    const sessionIds = new Set<string>([
+      ...fileIndex.keys(),
+      ...history.keys(),
+      ...sessionMetaIndex.keys(),
+    ]);
+
     const sessions: Session[] = [];
-    const seenIds = new Set<string>();
 
-    for (const entry of entries) {
-      let sessionId = entry.sessionId;
-      if (!sessionId) {
-        const encodedProject = encodeProjectPath(entry.project);
-        sessionId = await findSessionByTimestamp(encodedProject, entry.timestamp);
+    for (const sessionId of sessionIds) {
+      let filePath = fileIndex.get(sessionId);
+      if (!filePath) {
+        filePath = await findSessionFile(sessionId);
       }
 
-      if (!sessionId || seenIds.has(sessionId)) {
-        continue;
+      let meta = sessionMetaIndex.get(sessionId);
+      if (!meta && filePath) {
+        meta = await readSessionMetaFromFile(filePath);
+        if (meta) {
+          sessionMetaIndex.set(sessionId, meta);
+        }
       }
 
-      seenIds.add(sessionId);
+      const historyEntry = history.get(sessionId);
+
+      let timestamp = 0;
+      if (historyEntry) {
+        timestamp = historyEntry.timestamp * 1000;
+      } else if (meta?.timestamp) {
+        timestamp = meta.timestamp;
+      } else if (filePath) {
+        try {
+          const fileStat = await stat(filePath);
+          timestamp = fileStat.mtimeMs;
+        } catch {
+          timestamp = 0;
+        }
+      }
+
+      let display = historyEntry ? normalizeDisplayText(historyEntry.text) : "";
+      if (!display || display === "(no prompt text)") {
+        const cachedDisplay = sessionDisplayCache.get(sessionId);
+        if (cachedDisplay) {
+          display = cachedDisplay;
+        } else if (filePath) {
+          display = await getFirstUserMessageSnippet(filePath);
+          sessionDisplayCache.set(sessionId, display);
+        } else {
+          display = "(no prompt text)";
+        }
+      }
+
+      const project = meta?.cwd ?? "";
+
       sessions.push({
         id: sessionId,
-        display: entry.display,
-        timestamp: entry.timestamp,
-        project: entry.project,
-        projectName: getProjectName(entry.project),
+        display,
+        timestamp,
+        project,
+        projectName: getProjectName(project),
       });
     }
 
@@ -264,12 +806,12 @@ export async function getSessions(): Promise<Session[]> {
 }
 
 export async function getProjects(): Promise<string[]> {
-  const entries = historyCache ?? (await loadHistoryCache());
+  const sessions = await getSessions();
   const projects = new Set<string>();
 
-  for (const entry of entries) {
-    if (entry.project) {
-      projects.add(entry.project);
+  for (const session of sessions) {
+    if (session.project) {
+      projects.add(session.project);
     }
   }
 
@@ -277,7 +819,7 @@ export async function getProjects(): Promise<string[]> {
 }
 
 export async function getConversation(
-  sessionId: string
+  sessionId: string,
 ): Promise<ConversationMessage[]> {
   return dedupe(`getConversation:${sessionId}`, async () => {
     const filePath = await findSessionFile(sessionId);
@@ -286,43 +828,38 @@ export async function getConversation(
       return [];
     }
 
-    const messages: ConversationMessage[] = [];
-
     try {
       const content = await readFile(filePath, "utf-8");
-      const lines = content.trim().split("\n").filter(Boolean);
+      const lines = content.split("\n");
+
+      let offset = 0;
+      const parsedLines: LineWithOffset[] = [];
 
       for (const line of lines) {
-        try {
-          const msg: ConversationMessage = JSON.parse(line);
-          if (msg.type === "user" || msg.type === "assistant") {
-            messages.push(msg);
-          } else if (msg.type === "summary") {
-            messages.unshift(msg);
-          }
-        } catch {
-          // Skip malformed lines
+        const lineBytes = Buffer.byteLength(line, "utf-8") + 1;
+        if (line.trim()) {
+          parsedLines.push({ line, offset });
         }
+        offset += lineBytes;
       }
+
+      return parseCodexConversation(parsedLines);
     } catch (err) {
       console.error("Error reading conversation:", err);
+      return [];
     }
-
-    return messages;
   });
 }
 
 export async function getConversationStream(
   sessionId: string,
-  fromOffset: number = 0
+  fromOffset: number = 0,
 ): Promise<StreamResult> {
   const filePath = await findSessionFile(sessionId);
 
   if (!filePath) {
     return { messages: [], nextOffset: 0 };
   }
-
-  const messages: ConversationMessage[] = [];
 
   let fileHandle;
   try {
@@ -344,30 +881,35 @@ export async function getConversationStream(
       crlfDelay: Infinity,
     });
 
+    const parsedLines: LineWithOffset[] = [];
     let bytesConsumed = 0;
 
     for await (const line of rl) {
       const lineBytes = Buffer.byteLength(line, "utf-8") + 1;
+      const lineOffset = fromOffset + bytesConsumed;
 
       if (line.trim()) {
-        try {
-          const msg: ConversationMessage = JSON.parse(line);
-          if (msg.type === "user" || msg.type === "assistant") {
-            messages.push(msg);
-          }
-          bytesConsumed += lineBytes;
-        } catch {
+        const parsed = safeJsonParse(line);
+        if (parsed === null) {
           break;
         }
-      } else {
-        bytesConsumed += lineBytes;
+
+        parsedLines.push({
+          line,
+          offset: lineOffset,
+        });
       }
+
+      bytesConsumed += lineBytes;
     }
 
     const actualOffset = fromOffset + bytesConsumed;
     const nextOffset = actualOffset > fileSize ? fileSize : actualOffset;
 
-    return { messages, nextOffset };
+    return {
+      messages: parseCodexConversation(parsedLines),
+      nextOffset,
+    };
   } catch (err) {
     console.error("Error reading conversation stream:", err);
     return { messages: [], nextOffset: fromOffset };

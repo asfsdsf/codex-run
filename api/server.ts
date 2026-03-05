@@ -7,7 +7,7 @@ import type { ServerType } from "@hono/node-server";
 import {
   initStorage,
   loadStorage,
-  getClaudeDir,
+  getCodexDir,
   getSessions,
   getProjects,
   getConversation,
@@ -42,16 +42,16 @@ function getWebDistPath(): string {
 
 export interface ServerOptions {
   port: number;
-  claudeDir?: string;
+  codexDir?: string;
   dev?: boolean;
   open?: boolean;
 }
 
 export function createServer(options: ServerOptions) {
-  const { port, claudeDir, dev = false, open: shouldOpen = true } = options;
+  const { port, codexDir, dev = false, open: shouldOpen = true } = options;
 
-  initStorage(claudeDir);
-  initWatcher(getClaudeDir());
+  initStorage(codexDir);
+  initWatcher(getCodexDir());
 
   const app = new Hono();
 
@@ -83,10 +83,14 @@ export function createServer(options: ServerOptions) {
 
       const cleanup = () => {
         isConnected = false;
-        offHistoryChange(handleHistoryChange);
+        offHistoryChange(handleSessionsChange);
+        offSessionChange(handleSessionsChange);
       };
 
-      const handleHistoryChange = async () => {
+      const handleSessionsChange = async (
+        _sessionId?: string,
+        _filePath?: string,
+      ) => {
         if (!isConnected) {
           return;
         }
@@ -112,7 +116,8 @@ export function createServer(options: ServerOptions) {
         }
       };
 
-      onHistoryChange(handleHistoryChange);
+      onHistoryChange(handleSessionsChange);
+      onSessionChange(handleSessionsChange);
       c.req.raw.signal.addEventListener("abort", cleanup);
 
       try {
@@ -150,7 +155,8 @@ export function createServer(options: ServerOptions) {
   app.get("/api/conversation/:id/stream", async (c) => {
     const sessionId = c.req.param("id");
     const offsetParam = c.req.query("offset");
-    let offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+    const parsedOffset = offsetParam ? parseInt(offsetParam, 10) : 0;
+    let offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
 
     return streamSSE(c, async (stream) => {
       let isConnected = true;
@@ -173,7 +179,10 @@ export function createServer(options: ServerOptions) {
           try {
             await stream.writeSSE({
               event: "messages",
-              data: JSON.stringify(newMessages),
+              data: JSON.stringify({
+                messages: newMessages,
+                nextOffset: newOffset,
+              }),
             });
           } catch {
             cleanup();
@@ -193,7 +202,10 @@ export function createServer(options: ServerOptions) {
 
         await stream.writeSSE({
           event: "messages",
-          data: JSON.stringify(messages),
+          data: JSON.stringify({
+            messages,
+            nextOffset,
+          }),
         });
 
         while (isConnected) {
@@ -244,7 +256,7 @@ export function createServer(options: ServerOptions) {
       await loadStorage();
       const openUrl = `http://localhost:${dev ? 12000 : port}/`;
 
-      console.log(`\n  claude-run is running at ${openUrl}\n`);
+      console.log(`\n  codex-run is running at ${openUrl}\n`);
       if (!dev && shouldOpen) {
         open(openUrl).catch(console.error);
       }

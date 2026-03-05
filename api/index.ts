@@ -23,14 +23,14 @@ function getVersion(): string {
 program
   .name("claude-run")
   .description(
-    "A beautiful web UI for browsing Claude Code conversation history"
+    "A beautiful web UI for browsing Codex CLI conversation history"
   )
   .version(getVersion())
   .option("-p, --port <number>", "Port to listen on", "12001")
   .option(
     "-d, --dir <path>",
-    "Claude directory path",
-    join(homedir(), ".claude")
+    "Codex directory path",
+    join(homedir(), ".codex")
   )
   .option("--dev", "Enable CORS for development")
   .option("--no-open", "Do not open browser automatically")
@@ -45,7 +45,7 @@ const opts = program.opts<{
 
 const server = createServer({
   port: parseInt(opts.port, 10),
-  claudeDir: opts.dir,
+  codexDir: opts.dir,
   dev: opts.dev,
   open: opts.open,
 });

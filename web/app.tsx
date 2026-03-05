@@ -60,7 +60,7 @@ function App() {
 
   const handleCopyResumeCommand = useCallback(
     (sessionId: string, projectPath: string) => {
-      const command = `cd ${projectPath} && claude --resume ${sessionId}`;
+      const command = `cd ${projectPath} && codex resume ${sessionId}`;
       navigator.clipboard.writeText(command).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
