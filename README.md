@@ -1,13 +1,13 @@
 <div align="center">
 
-# Claude Run
+# Codex Run
 
-Browse your Claude Code conversation history in a beautiful web UI
+Browse your Codex CLI conversation history in a beautiful web UI
 
-[![npm version](https://img.shields.io/npm/v/claude-run.svg)](https://www.npmjs.com/package/claude-run)
+[![npm version](https://img.shields.io/npm/v/codex-run.svg)](https://www.npmjs.com/package/codex-run)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-<img src=".github/claude-run.gif" alt="Claude Run Demo" width="800" />
+<img src=".github/codex-run.gif" alt="Codex Run Demo" width="800" />
 
 </div>
 
@@ -16,14 +16,14 @@ Browse your Claude Code conversation history in a beautiful web UI
 Run the project simply by executing
 
 ```bash
-npx claude-run
+npx codex-run
 ```
 
 The browser will open automatically at http://localhost:12001.
 
 ## Features
 
-- **Real-time streaming** - Watch conversations update live as Claude responds
+- **Real-time streaming** - Watch conversations update live as Codex responds
 - **Search** - Find sessions by prompt text or project name
 - **Filter by project** - Focus on specific projects
 - **Resume sessions** - Copy the resume command to continue any conversation in your terminal
@@ -36,31 +36,31 @@ The browser will open automatically at http://localhost:12001.
 Install globally via npm:
 
 ```bash
-npm install -g claude-run
+npm install -g codex-run
 ```
 
 Then run it from any directory:
 
 ```bash
-claude-run
+codex-run
 ```
 
-The browser will open automatically at http://localhost:12001, showing all your Claude Code conversations.
+The browser will open automatically at http://localhost:12001, showing all your Codex CLI conversations.
 
 ```bash
-claude-run [options]
+codex-run [options]
 
 Options:
   -V, --version        Show version number
   -p, --port <number>  Port to listen on (default: 12001)
-  -d, --dir <path>     Claude directory (default: ~/.claude)
+  -d, --dir <path>     Codex directory (default: ~/.codex)
   --no-open            Do not open browser automatically
   -h, --help           Show help
 ```
 
 ## How It Works
 
-Claude Code stores conversation history in `~/.claude/`. This tool reads that data and presents it in a web interface with:
+Codex CLI stores conversation history in `~/.codex/`. This tool reads that data and presents it in a web interface with:
 
 - **Session list** - All your conversations, sorted by recency
 - **Project filter** - Focus on a specific project
@@ -72,14 +72,14 @@ Claude Code stores conversation history in `~/.claude/`. This tool reads that da
 ## Requirements
 
 - Node.js 20+
-- Claude Code installed and used at least once
+- Codex CLI installed and used at least once
 
 ## Development
 
 ```bash
 # Clone the repo
-git clone https://github.com/kamranahmedse/claude-run.git
-cd claude-run
+git clone https://github.com/kamranahmedse/codex-run.git
+cd codex-run
 
 # Install dependencies
 pnpm install

@@ -21,7 +21,7 @@ function getVersion(): string {
 }
 
 program
-  .name("claude-run")
+  .name("codex-run")
   .description(
     "A beautiful web UI for browsing Codex CLI conversation history"
   )

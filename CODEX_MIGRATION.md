@@ -235,10 +235,10 @@ Exit criteria:
 
 ## Phase 6: Packaging and Naming
 
-- `[ ]` Rename package/bin metadata (`claude-run` -> codex-oriented name)
-- `[ ]` Update README usage, options, and screenshots/GIF references
-- `[ ]` Update alias imports (`@claude-run/api`) to neutral/provider-safe naming
-- `[ ]` Review keywords/repository metadata for publish readiness
+- `[x]` Rename package/bin metadata (`claude-run` -> codex-oriented name)
+- `[x]` Update README usage, options, and screenshots/GIF references
+- `[x]` Update alias imports (`@claude-run/api`) to neutral/provider-safe naming
+- `[x]` Review keywords/repository metadata for publish readiness
 
 Exit criteria:
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import type { Session } from "@claude-run/api";
+import type { Session } from "@codex-run/api";
 import { PanelLeft, Copy, Check } from "lucide-react";
 import { formatTime } from "./utils";
 import SessionList from "./components/session-list";
