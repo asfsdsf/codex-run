@@ -78,7 +78,7 @@ Codex CLI stores conversation history in `~/.codex/`. This tool reads that data 
 
 ```bash
 # Clone the repo
-git clone https://github.com/kamranahmedse/codex-run.git
+git clone https://github.com/asfsdsf/codex-run.git
 cd codex-run
 
 # Install dependencies
@@ -90,6 +90,10 @@ pnpm dev
 # Build for production
 pnpm build
 ```
+
+## Acknowledgments
+
+This project was originally based on [`claude-run`](https://github.com/kamranahmedse/claude-run) by Kamran Ahmed. Special thanks to the author for the great design and inspiration.
 
 ## License
 
