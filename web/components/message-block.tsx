@@ -50,6 +50,19 @@ function buildToolMap(content: ContentBlock[]): Map<string, string> {
   return toolMap;
 }
 
+function formatReasoningText(text: string): string {
+  const sanitized = sanitizeText(text).trim();
+  return sanitized.replace(/^\*\*(.*?)\*\*$/s, "$1").trim();
+}
+
+function getReasoningPreview(text: string, maxLength: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
 const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
   const { message } = props;
 
@@ -63,13 +76,17 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
     return content.filter((b) => b.type === "text");
   };
 
-  const getToolBlocks = (): ContentBlock[] => {
+  const getAuxiliaryBlocks = (): ContentBlock[] => {
     if (!content || typeof content === "string") {
       return [];
     }
     return content.filter(
       (b) =>
-        b.type === "tool_use" || b.type === "tool_result" || b.type === "thinking"
+        b.type === "tool_use" ||
+        b.type === "tool_result" ||
+        b.type === "thinking" ||
+        b.type === "reasoning" ||
+        b.type === "agent_reasoning"
     );
   };
 
@@ -86,24 +103,24 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
     return getVisibleTextBlocks().length > 0;
   };
 
-  const toolBlocks = getToolBlocks();
+  const auxiliaryBlocks = getAuxiliaryBlocks();
   const visibleTextBlocks = getVisibleTextBlocks();
   const hasText = hasVisibleText();
-  const hasTools = toolBlocks.length > 0;
+  const hasAuxiliary = auxiliaryBlocks.length > 0;
 
   const toolMap = Array.isArray(content) ? buildToolMap(content) : new Map<string, string>();
 
-  if (!hasText && hasTools) {
+  if (!hasText && hasAuxiliary) {
     return (
       <div className="flex flex-col gap-1 py-0.5">
-        {toolBlocks.map((block, index) => (
+        {auxiliaryBlocks.map((block, index) => (
           <ContentBlockRenderer key={index} block={block} toolMap={toolMap} />
         ))}
       </div>
     );
   }
 
-  if (!hasText && !hasTools) {
+  if (!hasText && !hasAuxiliary) {
     return null;
   }
 
@@ -134,9 +151,9 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
           )}
         </div>
 
-        {hasTools && (
+        {hasAuxiliary && (
           <div className="flex flex-col gap-1 mt-1.5">
-            {toolBlocks.map((block, index) => (
+            {auxiliaryBlocks.map((block, index) => (
               <ContentBlockRenderer key={index} block={block} toolMap={toolMap} />
             ))}
           </div>
@@ -375,6 +392,75 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
           <pre className="text-xs text-zinc-400 bg-zinc-900/80 border border-zinc-800 rounded-lg p-3 mt-2 whitespace-pre-wrap max-h-80 overflow-y-auto">
             {block.thinking}
           </pre>
+        )}
+      </div>
+    );
+  }
+
+  if (block.type === "agent_reasoning" && block.text) {
+    const reasoningText = formatReasoningText(block.text);
+    if (!reasoningText) {
+      return null;
+    }
+
+    return (
+      <div className="rounded-xl border border-fuchsia-500/20 bg-fuchsia-500/8 px-3 py-2.5">
+        <div className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-400/20 bg-fuchsia-400/10 px-2 py-1 text-[11px] text-fuchsia-200/90">
+          <Bot size={12} className="opacity-75" />
+          <span className="font-medium">agent step</span>
+        </div>
+        <div className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fuchsia-100/90">
+          {reasoningText}
+        </div>
+      </div>
+    );
+  }
+
+  if (block.type === "reasoning" && block.text) {
+    const reasoningText = formatReasoningText(block.text);
+    if (!reasoningText) {
+      return null;
+    }
+
+    const shouldCollapse = reasoningText.length > 120;
+
+    if (!shouldCollapse) {
+      return (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/8 px-3 py-2.5">
+          <div className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/20 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200/90">
+            <Lightbulb size={12} className="opacity-75" />
+            <span className="font-medium">reasoning</span>
+          </div>
+          <div className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-amber-100/90">
+            {reasoningText}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className={expanded ? "w-full" : ""}>
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-300 transition-colors hover:bg-amber-500/15"
+        >
+          <Lightbulb size={12} className="opacity-70" />
+          <span className="font-medium">reasoning</span>
+          {!expanded && (
+            <span className="max-w-[260px] truncate text-amber-100/65">
+              {getReasoningPreview(reasoningText, 80)}
+            </span>
+          )}
+          <span className="ml-0.5 text-[10px] opacity-40">
+            {expanded ? "▼" : "▶"}
+          </span>
+        </button>
+        {expanded && (
+          <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/8 px-3 py-2.5">
+            <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-amber-100/90">
+              {reasoningText}
+            </div>
+          </div>
         )}
       </div>
     );

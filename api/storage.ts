@@ -18,7 +18,13 @@ export interface Session {
 }
 
 export interface ConversationMessage {
-  type: "user" | "assistant" | "summary" | "file-history-snapshot";
+  type:
+    | "user"
+    | "assistant"
+    | "summary"
+    | "file-history-snapshot"
+    | "reasoning"
+    | "agent_reasoning";
   uuid?: string;
   parentUuid?: string;
   timestamp?: string;
@@ -33,7 +39,13 @@ export interface ConversationMessage {
 }
 
 export interface ContentBlock {
-  type: "text" | "thinking" | "tool_use" | "tool_result";
+  type:
+    | "text"
+    | "thinking"
+    | "tool_use"
+    | "tool_result"
+    | "reasoning"
+    | "agent_reasoning";
   text?: string;
   thinking?: string;
   id?: string;
@@ -418,6 +430,28 @@ function createTextMessage(
   };
 }
 
+function createReasoningMessage(
+  type: "reasoning" | "agent_reasoning",
+  text: string,
+  uuid: string,
+  timestamp?: string,
+): ConversationMessage {
+  return {
+    type,
+    uuid,
+    timestamp,
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type,
+          text,
+        },
+      ],
+    },
+  };
+}
+
 function createToolMessage(
   toolUse: PendingToolUse,
   uuid: string,
@@ -505,6 +539,100 @@ function extractTextFromPayloadContent(content: unknown): string {
   return parts.join("\n\n").trim();
 }
 
+function extractTextFromReasoningParts(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => extractTextFromReasoningParts(item))
+      .filter(Boolean);
+    return parts.join("\n\n").trim();
+  }
+
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const record = value as {
+    text?: unknown;
+    summary?: unknown;
+    content?: unknown;
+  };
+
+  if (typeof record.text === "string") {
+    return record.text.trim();
+  }
+
+  if (record.summary !== undefined) {
+    const summaryText = extractTextFromReasoningParts(record.summary);
+    if (summaryText) {
+      return summaryText;
+    }
+  }
+
+  if (record.content !== undefined) {
+    return extractTextFromReasoningParts(record.content);
+  }
+
+  return "";
+}
+
+function extractReasoningText(payload: Record<string, unknown>): string {
+  const summaryText = extractTextFromReasoningParts(payload.summary);
+  if (summaryText) {
+    return summaryText;
+  }
+
+  return extractTextFromReasoningParts(payload.content);
+}
+
+function normalizeReasoningText(text: string): string {
+  const trimmed = text.trim();
+  const unwrapped = trimmed.replace(/^\*\*(.*?)\*\*$/s, "$1");
+  return unwrapped.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function getReasoningTextFromMessage(message: ConversationMessage): string | null {
+  if (message.type !== "reasoning" && message.type !== "agent_reasoning") {
+    return null;
+  }
+
+  const content = message.message?.content;
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const block = content.find(
+    (item) =>
+      item.type === "reasoning" || item.type === "agent_reasoning",
+  );
+
+  return typeof block?.text === "string" ? block.text : null;
+}
+
+function pushConversationMessage(
+  messages: ConversationMessage[],
+  message: ConversationMessage,
+): void {
+  if (message.type === "reasoning" || message.type === "agent_reasoning") {
+    const text = getReasoningTextFromMessage(message);
+    const lastMessage = messages[messages.length - 1];
+    const lastText = lastMessage ? getReasoningTextFromMessage(lastMessage) : null;
+
+    if (
+      text &&
+      lastText &&
+      normalizeReasoningText(text) === normalizeReasoningText(lastText)
+    ) {
+      return;
+    }
+  }
+
+  messages.push(message);
+}
+
 function parseToolUseFromPayload(
   payload: Record<string, unknown>,
   timestamp: string | undefined,
@@ -581,19 +709,42 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
       timestamp?: unknown;
       payload?: unknown;
     };
+    const timestamp =
+      typeof record.timestamp === "string" ? record.timestamp : undefined;
 
-    if (
-      record.type !== "response_item" ||
-      !record.payload ||
-      typeof record.payload !== "object"
-    ) {
+    if (!record.payload || typeof record.payload !== "object") {
       continue;
     }
 
     const payload = record.payload as Record<string, unknown>;
     const payloadType = typeof payload.type === "string" ? payload.type : "";
-    const timestamp =
-      typeof record.timestamp === "string" ? record.timestamp : undefined;
+
+    if (record.type === "event_msg") {
+      if (payloadType !== "agent_reasoning") {
+        continue;
+      }
+
+      const text =
+        typeof payload.text === "string" ? payload.text.trim() : "";
+      if (!text) {
+        continue;
+      }
+
+      pushConversationMessage(
+        messages,
+        createReasoningMessage(
+          "agent_reasoning",
+          text,
+          `${offset}:agent-reasoning:${messages.length}`,
+          timestamp,
+        ),
+      );
+      continue;
+    }
+
+    if (record.type !== "response_item") {
+      continue;
+    }
 
     if (payloadType === "message") {
       const role = payload.role;
@@ -606,8 +757,33 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
         continue;
       }
 
-      messages.push(
+      pushConversationMessage(
+        messages,
         createTextMessage(role, text, `${offset}:message:${messages.length}`, timestamp),
+      );
+      continue;
+    }
+
+    if (payloadType === "reasoning") {
+      let text = extractReasoningText(payload);
+      if (!text) {
+        const hasEncryptedContent =
+          typeof payload.encrypted_content === "string" &&
+          payload.encrypted_content.trim().length > 0;
+        if (!hasEncryptedContent) {
+          continue;
+        }
+        text = "Encrypted reasoning captured in the session log";
+      }
+
+      pushConversationMessage(
+        messages,
+        createReasoningMessage(
+          "reasoning",
+          text,
+          `${offset}:reasoning:${messages.length}`,
+          timestamp,
+        ),
       );
       continue;
     }
@@ -622,7 +798,8 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
 
       // Web search may not emit a separate output item, so include status if available.
       if (payloadType === "web_search_call" && payload.status !== undefined) {
-        messages.push(
+        pushConversationMessage(
+          messages,
           createToolMessage(toolUse, `${offset}:tool:${messages.length}`, {
             content: toToolOutputContent(payload.status),
           }),
@@ -640,7 +817,8 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
       const pairedToolUse = pendingToolCalls.get(result.callId);
 
       if (pairedToolUse) {
-        messages.push(
+        pushConversationMessage(
+          messages,
           createToolMessage(
             pairedToolUse,
             `${offset}:tool-pair:${messages.length}`,
@@ -652,7 +830,8 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
         );
         pendingToolCalls.delete(result.callId);
       } else {
-        messages.push(
+        pushConversationMessage(
+          messages,
           createToolResultOnlyMessage(
             result.callId,
             result.content,
@@ -667,7 +846,8 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
   }
 
   for (const toolUse of pendingToolCalls.values()) {
-    messages.push(
+    pushConversationMessage(
+      messages,
       createToolMessage(toolUse, `${toolUse.lineOffset}:tool-pending:${messages.length}`),
     );
   }

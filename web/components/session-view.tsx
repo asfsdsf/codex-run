@@ -134,7 +134,14 @@ function SessionView(props: SessionViewProps) {
   };
 
   const summary = messages.find((m) => m.type === "summary");
-  const conversationMessages = messages.filter(
+  const visibleMessages = messages.filter(
+    (m) =>
+      m.type === "user" ||
+      m.type === "assistant" ||
+      m.type === "reasoning" ||
+      m.type === "agent_reasoning"
+  );
+  const chatMessages = visibleMessages.filter(
     (m) => m.type === "user" || m.type === "assistant"
   );
 
@@ -160,17 +167,17 @@ function SessionView(props: SessionViewProps) {
                 {summary.summary}
               </h2>
               <p className="mt-2 text-[11px] text-zinc-500">
-                {conversationMessages.length} messages
+                {chatMessages.length} messages
               </p>
             </div>
           )}
 
           <div className="flex flex-col gap-2">
-            {conversationMessages.map((message, index) => (
+            {visibleMessages.map((message, index) => (
               <div
                 key={message.uuid || index}
                 ref={
-                  index === conversationMessages.length - 1
+                  index === visibleMessages.length - 1
                     ? lastMessageRef
                     : undefined
                 }
