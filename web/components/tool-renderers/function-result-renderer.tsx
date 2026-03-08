@@ -1,0 +1,572 @@
+import { CheckCircle2, ImageIcon, Terminal } from "lucide-react";
+import { BashResultRenderer } from "./bash-renderer";
+import { SearchResultRenderer } from "./search-renderer";
+import { FileContentRenderer } from "./read-renderer";
+import { CopyButton } from "./copy-button";
+import { MarkdownRenderer, getFencedCodeBlock } from "../markdown-renderer";
+
+interface FunctionToolResultRendererProps {
+  toolName: string;
+  content: string;
+  isError?: boolean;
+}
+
+interface ExecResultMeta {
+  chunkId?: string;
+  wallTime?: string;
+  exitCode?: number;
+  originalTokenCount?: string;
+  totalOutputLines?: string;
+  body: string;
+}
+
+interface RichContentPart {
+  type?: string;
+  text?: string;
+  image_url?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function tryParseJson(content: string): unknown {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const firstChar = trimmed[0];
+  const looksLikeJson =
+    firstChar === "{" ||
+    firstChar === "[" ||
+    firstChar === '"' ||
+    trimmed === "null" ||
+    trimmed === "true" ||
+    trimmed === "false" ||
+    /^-?\d/.test(trimmed);
+
+  if (!looksLikeJson) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function stringifyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? "null";
+  } catch {
+    return String(value);
+  }
+}
+
+function JsonResultRenderer(props: { value: unknown }) {
+  return (
+    <MarkdownRenderer
+      content={getFencedCodeBlock(stringifyJson(props.value), "json")}
+    />
+  );
+}
+
+function formatInlineMarkdown(value: unknown): string {
+  if (value === null) {
+    return "`null`";
+  }
+
+  if (value === undefined) {
+    return "`undefined`";
+  }
+
+  if (typeof value === "string") {
+    if (!value.trim()) {
+      return "_(empty)_";
+    }
+
+    const normalized = value.replace(/`/g, "\\`");
+    return /^[\w./:@-]+$/.test(normalized) ? `\`${normalized}\`` : normalized;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return `\`${String(value)}\``;
+  }
+
+  return `\`${JSON.stringify(value)}\``;
+}
+
+function isMarkdownFriendly(value: unknown, depth: number = 0): boolean {
+  if (depth > 4) {
+    return false;
+  }
+
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    return true;
+  }
+
+  if (typeof value === "string") {
+    return !value.includes("\n") && value.length <= 240;
+  }
+
+  if (Array.isArray(value)) {
+    return value.every((item) => isMarkdownFriendly(item, depth + 1));
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).every((item) =>
+      isMarkdownFriendly(item, depth + 1),
+    );
+  }
+
+  return false;
+}
+
+function toMarkdownList(value: unknown, depth: number = 0): string {
+  const indent = "  ".repeat(depth);
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return `${indent}- _(empty)_`;
+    }
+
+    return value
+      .map((item) => {
+        if (isRecord(item) || Array.isArray(item)) {
+          return `${indent}-\n${toMarkdownList(item, depth + 1)}`;
+        }
+        return `${indent}- ${formatInlineMarkdown(item)}`;
+      })
+      .join("\n");
+  }
+
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return `${indent}- _(empty)_`;
+    }
+
+    return entries
+      .map(([key, item]) => {
+        if (isRecord(item) || Array.isArray(item)) {
+          return `${indent}- **${key}**:\n${toMarkdownList(item, depth + 1)}`;
+        }
+        return `${indent}- **${key}**: ${formatInlineMarkdown(item)}`;
+      })
+      .join("\n");
+  }
+
+  return `${indent}- ${formatInlineMarkdown(value)}`;
+}
+
+function parseExecOutput(content: string): ExecResultMeta {
+  const lines = content.split("\n");
+  const meta: ExecResultMeta = { body: content.trimEnd() };
+
+  let bodyStartIndex = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+
+    if (line === "Output:" || line === "") {
+      if (line === "Output:") {
+        bodyStartIndex = index + 1;
+      }
+      continue;
+    }
+
+    if (line.startsWith("Chunk ID:")) {
+      meta.chunkId = line.slice("Chunk ID:".length).trim();
+      continue;
+    }
+
+    if (line.startsWith("Wall time:")) {
+      meta.wallTime = line.slice("Wall time:".length).trim();
+      continue;
+    }
+
+    const exitCodeMatch = line.match(/^Process exited with code\s+(\d+)/);
+    if (exitCodeMatch) {
+      meta.exitCode = Number(exitCodeMatch[1]);
+      continue;
+    }
+
+    if (line.startsWith("Original token count:")) {
+      meta.originalTokenCount = line
+        .slice("Original token count:".length)
+        .trim();
+      continue;
+    }
+
+    if (line.startsWith("Total output lines:")) {
+      meta.totalOutputLines = line.slice("Total output lines:".length).trim();
+      continue;
+    }
+
+    bodyStartIndex = index;
+    break;
+  }
+
+  meta.body = lines.slice(bodyStartIndex).join("\n").trimEnd();
+  return meta;
+}
+
+function MetadataBadge(props: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "success" | "error";
+}) {
+  const { label, value, tone = "neutral" } = props;
+
+  const className =
+    tone === "success"
+      ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+      : tone === "error"
+        ? "border-rose-500/20 bg-rose-500/10 text-rose-200"
+        : "border-zinc-700/60 bg-zinc-800/70 text-zinc-400";
+
+  return (
+    <span
+      className={`rounded-md border px-1.5 py-0.5 text-[10px] ${className}`}
+    >
+      {label}: {value}
+    </span>
+  );
+}
+
+function ExecResultRenderer(props: { content: string; isError?: boolean }) {
+  const { content, isError } = props;
+  const parsed = parseExecOutput(content);
+  const body = parsed.body || "";
+  const isFailure =
+    isError || (parsed.exitCode !== undefined && parsed.exitCode !== 0);
+
+  return (
+    <div className="w-full mt-2">
+      <div
+        className={`overflow-hidden rounded-lg border ${
+          isFailure
+            ? "border-rose-900/40 bg-rose-950/20"
+            : "border-zinc-700/50 bg-zinc-900/70"
+        }`}
+      >
+        <div
+          className={`flex flex-wrap items-center gap-2 border-b px-3 py-2 ${
+            isFailure
+              ? "border-rose-900/30 bg-rose-900/20"
+              : "border-zinc-700/50 bg-zinc-800/30"
+          }`}
+        >
+          <Terminal
+            size={14}
+            className={isFailure ? "text-rose-300" : "text-green-400"}
+          />
+          <span className="text-xs font-medium text-zinc-200">
+            Terminal output
+          </span>
+          {parsed.exitCode !== undefined && (
+            <MetadataBadge
+              label="exit"
+              value={String(parsed.exitCode)}
+              tone={parsed.exitCode === 0 ? "success" : "error"}
+            />
+          )}
+          {parsed.wallTime && (
+            <MetadataBadge label="time" value={parsed.wallTime} />
+          )}
+          {parsed.originalTokenCount && (
+            <MetadataBadge label="tokens" value={parsed.originalTokenCount} />
+          )}
+          {parsed.totalOutputLines && (
+            <MetadataBadge label="lines" value={parsed.totalOutputLines} />
+          )}
+          {body && <CopyButton text={body} className="ml-auto" />}
+        </div>
+        {body ? (
+          <pre
+            className={`max-h-96 overflow-auto rounded-none border-0 p-3 text-xs whitespace-pre-wrap break-all ${
+              isFailure ? "text-rose-100/90" : "text-zinc-200"
+            }`}
+          >
+            {body}
+          </pre>
+        ) : (
+          <div className="px-3 py-2 text-xs text-zinc-500">No output</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RichContentRenderer(props: { parts: RichContentPart[] }) {
+  const { parts } = props;
+
+  return (
+    <div className="w-full mt-2 space-y-3">
+      {parts.map((part, index) => {
+        if (
+          (part.type === "input_text" || part.type === "output_text") &&
+          typeof part.text === "string"
+        ) {
+          return (
+            <div
+              key={index}
+              className="rounded-lg border border-zinc-700/50 bg-zinc-900/70 px-3 py-2.5"
+            >
+              <MarkdownRenderer content={part.text} />
+            </div>
+          );
+        }
+
+        if (part.type === "input_image" && typeof part.image_url === "string") {
+          return (
+            <div
+              key={index}
+              className="overflow-hidden rounded-lg border border-zinc-700/50 bg-zinc-900/70"
+            >
+              <div className="flex items-center gap-2 border-b border-zinc-700/50 bg-zinc-800/30 px-3 py-2">
+                <ImageIcon size={14} className="text-cyan-400" />
+                <span className="text-xs font-medium text-zinc-300">Image</span>
+              </div>
+              <div className="flex items-center justify-center bg-zinc-950 p-3">
+                <img
+                  src={part.image_url}
+                  alt={`Tool result ${index + 1}`}
+                  className="max-h-[420px] w-auto max-w-full rounded-md"
+                />
+              </div>
+            </div>
+          );
+        }
+
+        return <JsonResultRenderer key={index} value={part} />;
+      })}
+    </div>
+  );
+}
+
+function StatusResultRenderer(props: {
+  label: string;
+  detail?: string;
+  isError?: boolean;
+}) {
+  const { label, detail, isError } = props;
+
+  return (
+    <div className="w-full mt-2">
+      <div
+        className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${
+          isError
+            ? "border-rose-500/20 bg-rose-500/10 text-rose-200"
+            : "border-teal-500/20 bg-teal-500/10 text-teal-200"
+        }`}
+      >
+        <CheckCircle2 size={14} className="opacity-80" />
+        <span className="text-xs font-medium">{label}</span>
+        {detail && <span className="text-xs opacity-75">{detail}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ApplyPatchResultRenderer(props: {
+  value: Record<string, unknown>;
+  isError?: boolean;
+}) {
+  const { value, isError } = props;
+  const output = typeof value.output === "string" ? value.output.trim() : "";
+  const metadata = isRecord(value.metadata) ? value.metadata : null;
+  const lines = output ? output.split("\n").filter(Boolean) : [];
+  const summary = lines[0] ?? (isError ? "Patch failed" : "Patch applied");
+  const fileLines = lines
+    .slice(1)
+    .filter((line) => /^([A-Z?]{1,2})\s+/.test(line));
+
+  return (
+    <div className="w-full mt-2">
+      <div
+        className={`overflow-hidden rounded-lg border ${
+          isError
+            ? "border-rose-900/40 bg-rose-950/20"
+            : "border-emerald-900/40 bg-emerald-950/20"
+        }`}
+      >
+        <div
+          className={`flex flex-wrap items-center gap-2 border-b px-3 py-2 ${
+            isError
+              ? "border-rose-900/30 bg-rose-900/20"
+              : "border-emerald-900/30 bg-emerald-900/20"
+          }`}
+        >
+          <CheckCircle2
+            size={14}
+            className={isError ? "text-rose-300" : "text-emerald-300"}
+          />
+          <span className="text-xs font-medium text-zinc-100">{summary}</span>
+          {metadata && typeof metadata.exit_code === "number" && (
+            <MetadataBadge
+              label="exit"
+              value={String(metadata.exit_code)}
+              tone={metadata.exit_code === 0 ? "success" : "error"}
+            />
+          )}
+          {metadata && typeof metadata.duration_seconds === "number" && (
+            <MetadataBadge
+              label="duration"
+              value={`${metadata.duration_seconds}s`}
+            />
+          )}
+        </div>
+        {fileLines.length > 0 && (
+          <div className="divide-y divide-zinc-800/50">
+            {fileLines.map((line) => {
+              const match = line.match(/^([A-Z?]{1,2})\s+(.+)$/);
+              const status = match?.[1] ?? "?";
+              const filePath = match?.[2] ?? line;
+
+              return (
+                <div
+                  key={line}
+                  className="flex items-center gap-2 px-3 py-2 text-xs"
+                >
+                  <span className="w-5 text-center font-medium text-emerald-300">
+                    {status}
+                  </span>
+                  <span className="font-mono text-zinc-300">{filePath}</span>
+                  <CopyButton text={filePath} className="ml-auto" />
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!fileLines.length && output && (
+          <div className="px-3 py-2.5">
+            <MarkdownRenderer content={output} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlainTextResultRenderer(props: FunctionToolResultRendererProps) {
+  const { content, isError } = props;
+
+  if (!content || content.trim().length === 0) {
+    return (
+      <StatusResultRenderer label="Completed successfully" isError={isError} />
+    );
+  }
+
+  const maxLength = 2000;
+  const truncated = content.length > maxLength;
+  const displayContent = truncated ? content.slice(0, maxLength) : content;
+
+  return (
+    <pre
+      className={`mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-lg border p-3 text-xs ${
+        isError
+          ? "border-rose-900/30 bg-rose-950/30 text-rose-200/80"
+          : "border-teal-900/30 bg-teal-950/30 text-teal-200/80"
+      }`}
+    >
+      {displayContent}
+      {truncated && (
+        <span className="text-zinc-500">
+          ... ({content.length - maxLength} more chars)
+        </span>
+      )}
+    </pre>
+  );
+}
+
+export function FunctionToolResultRenderer(
+  props: FunctionToolResultRendererProps,
+) {
+  const { toolName, content, isError } = props;
+  const name = toolName.toLowerCase();
+  const parsed = tryParseJson(content);
+
+  if (name === "bash") {
+    return <BashResultRenderer content={content} isError={isError} />;
+  }
+
+  if (name === "glob") {
+    return <SearchResultRenderer content={content} isFileList />;
+  }
+
+  if (name === "grep") {
+    return <SearchResultRenderer content={content} />;
+  }
+
+  if (name === "read") {
+    return <FileContentRenderer content={content} />;
+  }
+
+  if (name === "exec_command" || name === "write_stdin") {
+    return <ExecResultRenderer content={content} isError={isError} />;
+  }
+
+  if (name === "apply_patch" && isRecord(parsed)) {
+    return <ApplyPatchResultRenderer value={parsed} isError={isError} />;
+  }
+
+  if (name === "js_repl" || name === "view_image") {
+    if (Array.isArray(parsed)) {
+      return <RichContentRenderer parts={parsed as RichContentPart[]} />;
+    }
+    return <PlainTextResultRenderer {...props} />;
+  }
+
+  if (name === "update_plan") {
+    return (
+      <StatusResultRenderer
+        label={content.trim() || "Plan updated"}
+        isError={isError}
+      />
+    );
+  }
+
+  if (name === "js_repl_reset") {
+    return (
+      <StatusResultRenderer
+        label={content.trim() || "Kernel reset"}
+        isError={isError}
+      />
+    );
+  }
+
+  if (name === "web_search") {
+    return (
+      <StatusResultRenderer
+        label="Web search"
+        detail={content.trim() || undefined}
+        isError={isError}
+      />
+    );
+  }
+
+  if (
+    parsed &&
+    isMarkdownFriendly(parsed) &&
+    ["spawn_agent", "request_user_input", "wait", "close_agent"].includes(name)
+  ) {
+    return (
+      <div className="mt-2 rounded-lg border border-zinc-700/50 bg-zinc-900/70 px-3 py-2.5">
+        <MarkdownRenderer content={toMarkdownList(parsed)} />
+      </div>
+    );
+  }
+
+  if (parsed !== null) {
+    return <JsonResultRenderer value={parsed} />;
+  }
+
+  return <PlainTextResultRenderer {...props} />;
+}

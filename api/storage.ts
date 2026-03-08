@@ -52,7 +52,7 @@ export interface ContentBlock {
   name?: string;
   input?: unknown;
   tool_use_id?: string;
-  content?: string | ContentBlock[];
+  content?: unknown;
   is_error?: boolean;
 }
 
@@ -104,6 +104,7 @@ const sessionDisplayCache = new Map<string, string>();
 let historyCache: Map<string, SessionHistory> | null = null;
 
 const pendingRequests = new Map<string, Promise<unknown>>();
+const sessionToolNameIndex = new Map<string, Map<string, string>>();
 
 export function initStorage(dir?: string): void {
   codexDir = dir ?? join(homedir(), ".codex");
@@ -140,7 +141,9 @@ function normalizeDisplayText(text: string): string {
   if (!normalized) {
     return "(no prompt text)";
   }
-  return normalized.length > 240 ? `${normalized.slice(0, 240)}...` : normalized;
+  return normalized.length > 240
+    ? `${normalized.slice(0, 240)}...`
+    : normalized;
 }
 
 function extractSessionIdFromPath(filePath: string): string | null {
@@ -230,7 +233,9 @@ function parseSessionMetaLine(line: string): SessionMeta | null {
   };
 }
 
-async function readSessionMetaFromFile(filePath: string): Promise<SessionMeta | null> {
+async function readSessionMetaFromFile(
+  filePath: string,
+): Promise<SessionMeta | null> {
   const firstLine = await readFirstLine(filePath);
   if (!firstLine) {
     return null;
@@ -238,7 +243,10 @@ async function readSessionMetaFromFile(filePath: string): Promise<SessionMeta | 
   return parseSessionMetaLine(firstLine);
 }
 
-async function hydrateSessionMeta(sessionId: string, filePath: string): Promise<void> {
+async function hydrateSessionMeta(
+  sessionId: string,
+  filePath: string,
+): Promise<void> {
   if (sessionMetaIndex.has(sessionId)) {
     return;
   }
@@ -249,7 +257,10 @@ async function hydrateSessionMeta(sessionId: string, filePath: string): Promise<
   }
 }
 
-async function collectSessionFiles(dirPath: string, output: string[]): Promise<void> {
+async function collectSessionFiles(
+  dirPath: string,
+  output: string[],
+): Promise<void> {
   try {
     const entries = await readdir(dirPath, { withFileTypes: true });
     for (const entry of entries) {
@@ -393,7 +404,7 @@ function toToolInput(value: unknown): Record<string, unknown> {
   return { value };
 }
 
-function toToolOutputContent(value: unknown): string {
+function toToolOutputValue(value: unknown): unknown {
   if (typeof value === "string") {
     return truncateToolResult(value);
   }
@@ -401,11 +412,7 @@ function toToolOutputContent(value: unknown): string {
     return "";
   }
 
-  try {
-    return truncateToolResult(JSON.stringify(value, null, 2));
-  } catch {
-    return truncateToolResult(String(value));
-  }
+  return value;
 }
 
 function createTextMessage(
@@ -455,7 +462,7 @@ function createReasoningMessage(
 function createToolMessage(
   toolUse: PendingToolUse,
   uuid: string,
-  result?: { content: string; isError?: boolean },
+  result?: { content: unknown; isError?: boolean },
 ): ConversationMessage {
   const content: ContentBlock[] = [
     {
@@ -470,6 +477,7 @@ function createToolMessage(
     content.push({
       type: "tool_result",
       tool_use_id: toolUse.callId,
+      name: toolUse.name,
       content: result.content,
       is_error: result.isError,
     });
@@ -488,10 +496,11 @@ function createToolMessage(
 
 function createToolResultOnlyMessage(
   callId: string,
-  content: string,
+  content: unknown,
   uuid: string,
   timestamp?: string,
   isError?: boolean,
+  name?: string,
 ): ConversationMessage {
   return {
     type: "assistant",
@@ -503,6 +512,7 @@ function createToolResultOnlyMessage(
         {
           type: "tool_result",
           tool_use_id: callId,
+          name,
           content,
           is_error: isError,
         },
@@ -594,7 +604,9 @@ function normalizeReasoningText(text: string): string {
   return unwrapped.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function getReasoningTextFromMessage(message: ConversationMessage): string | null {
+function getReasoningTextFromMessage(
+  message: ConversationMessage,
+): string | null {
   if (message.type !== "reasoning" && message.type !== "agent_reasoning") {
     return null;
   }
@@ -605,8 +617,7 @@ function getReasoningTextFromMessage(message: ConversationMessage): string | nul
   }
 
   const block = content.find(
-    (item) =>
-      item.type === "reasoning" || item.type === "agent_reasoning",
+    (item) => item.type === "reasoning" || item.type === "agent_reasoning",
   );
 
   return typeof block?.text === "string" ? block.text : null;
@@ -619,7 +630,9 @@ function pushConversationMessage(
   if (message.type === "reasoning" || message.type === "agent_reasoning") {
     const text = getReasoningTextFromMessage(message);
     const lastMessage = messages[messages.length - 1];
-    const lastText = lastMessage ? getReasoningTextFromMessage(lastMessage) : null;
+    const lastText = lastMessage
+      ? getReasoningTextFromMessage(lastMessage)
+      : null;
 
     if (
       text &&
@@ -672,7 +685,7 @@ function parseToolUseFromPayload(
 
 function parseToolResultFromPayload(payload: Record<string, unknown>): {
   callId: string;
-  content: string;
+  content: unknown;
   isError?: boolean;
 } {
   const callId =
@@ -689,14 +702,18 @@ function parseToolResultFromPayload(payload: Record<string, unknown>): {
 
   return {
     callId,
-    content: toToolOutputContent(payload.output),
+    content: toToolOutputValue(payload.output),
     isError,
   };
 }
 
-function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] {
+function parseCodexConversation(
+  lines: LineWithOffset[],
+  knownToolNames?: Map<string, string>,
+): ConversationMessage[] {
   const messages: ConversationMessage[] = [];
   const pendingToolCalls = new Map<string, PendingToolUse>();
+  const toolNames = knownToolNames ?? new Map<string, string>();
 
   for (const { line, offset } of lines) {
     const parsed = safeJsonParse(line);
@@ -724,8 +741,7 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
         continue;
       }
 
-      const text =
-        typeof payload.text === "string" ? payload.text.trim() : "";
+      const text = typeof payload.text === "string" ? payload.text.trim() : "";
       if (!text) {
         continue;
       }
@@ -759,7 +775,12 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
 
       pushConversationMessage(
         messages,
-        createTextMessage(role, text, `${offset}:message:${messages.length}`, timestamp),
+        createTextMessage(
+          role,
+          text,
+          `${offset}:message:${messages.length}`,
+          timestamp,
+        ),
       );
       continue;
     }
@@ -795,13 +816,14 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
     ) {
       const toolUse = parseToolUseFromPayload(payload, timestamp, offset);
       pendingToolCalls.set(toolUse.callId, toolUse);
+      toolNames.set(toolUse.callId, toolUse.name);
 
       // Web search may not emit a separate output item, so include status if available.
       if (payloadType === "web_search_call" && payload.status !== undefined) {
         pushConversationMessage(
           messages,
           createToolMessage(toolUse, `${offset}:tool:${messages.length}`, {
-            content: toToolOutputContent(payload.status),
+            content: toToolOutputValue(payload.status),
           }),
         );
         pendingToolCalls.delete(toolUse.callId);
@@ -815,6 +837,7 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
     ) {
       const result = parseToolResultFromPayload(payload);
       const pairedToolUse = pendingToolCalls.get(result.callId);
+      const toolName = pairedToolUse?.name ?? toolNames.get(result.callId);
 
       if (pairedToolUse) {
         pushConversationMessage(
@@ -838,6 +861,7 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
             `${offset}:tool-result:${messages.length}`,
             timestamp,
             result.isError,
+            toolName,
           ),
         );
       }
@@ -848,7 +872,10 @@ function parseCodexConversation(lines: LineWithOffset[]): ConversationMessage[] 
   for (const toolUse of pendingToolCalls.values()) {
     pushConversationMessage(
       messages,
-      createToolMessage(toolUse, `${toolUse.lineOffset}:tool-pending:${messages.length}`),
+      createToolMessage(
+        toolUse,
+        `${toolUse.lineOffset}:tool-pending:${messages.length}`,
+      ),
     );
   }
 
@@ -1023,7 +1050,10 @@ export async function getConversation(
         offset += lineBytes;
       }
 
-      return parseCodexConversation(parsedLines);
+      const toolNames = new Map<string, string>();
+      const messages = parseCodexConversation(parsedLines, toolNames);
+      sessionToolNameIndex.set(sessionId, toolNames);
+      return messages;
     } catch (err) {
       console.error("Error reading conversation:", err);
       return [];
@@ -1043,6 +1073,10 @@ export async function getConversationStream(
 
   let fileHandle;
   try {
+    if (fromOffset > 0 && !sessionToolNameIndex.has(sessionId)) {
+      await getConversation(sessionId);
+    }
+
     const fileStat = await stat(filePath);
     const fileSize = fileStat.size;
 
@@ -1085,9 +1119,15 @@ export async function getConversationStream(
 
     const actualOffset = fromOffset + bytesConsumed;
     const nextOffset = actualOffset > fileSize ? fileSize : actualOffset;
+    const toolNames =
+      fromOffset === 0
+        ? new Map<string, string>()
+        : (sessionToolNameIndex.get(sessionId) ?? new Map<string, string>());
+    const messages = parseCodexConversation(parsedLines, toolNames);
+    sessionToolNameIndex.set(sessionId, toolNames);
 
     return {
-      messages: parseCodexConversation(parsedLines),
+      messages,
       nextOffset,
     };
   } catch (err) {

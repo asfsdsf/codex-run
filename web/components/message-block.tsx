@@ -18,14 +18,11 @@ import {
   Database,
   HardDrive,
   Bot,
+  ImageIcon,
 } from "lucide-react";
 import { sanitizeText } from "../utils";
 import { getFencedCodeBlock, MarkdownRenderer } from "./markdown-renderer";
-import {
-  BashResultRenderer,
-  SearchResultRenderer,
-  FileContentRenderer,
-} from "./tool-renderers";
+import { FunctionToolResultRenderer } from "./tool-renderers";
 
 interface MessageBlockProps {
   message: ConversationMessage;
@@ -190,6 +187,17 @@ const TOOL_ICONS: Record<string, typeof Wrench> = {
   write: FilePlus2,
   glob: FolderOpen,
   task: Bot,
+  exec_command: Terminal,
+  write_stdin: Terminal,
+  apply_patch: Pencil,
+  update_plan: ListTodo,
+  js_repl: FileCode,
+  js_repl_reset: FileCode,
+  spawn_agent: Bot,
+  wait: Bot,
+  close_agent: Bot,
+  request_user_input: MessageSquare,
+  view_image: ImageIcon,
 };
 
 const TOOL_ICON_PATTERNS: Array<{ patterns: string[]; icon: typeof Wrench }> = [
@@ -223,6 +231,19 @@ function getFilePathPreview(filePath: string): string {
 
 type PreviewHandler = (input: Record<string, unknown>) => string | null;
 
+function getTruncatedPreview(value: string, maxLength: number = 50): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function getApplyPatchPreview(raw: string): string | null {
+  const match = raw.match(/\*\*\* (?:Add|Update|Delete) File: (.+)/);
+  if (!match) {
+    return null;
+  }
+
+  return getFilePathPreview(match[1].trim());
+}
+
 const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
   read: (input) =>
     input.file_path ? getFilePathPreview(String(input.file_path)) : null,
@@ -240,6 +261,37 @@ const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
   grep: (input) => (input.pattern ? `"${String(input.pattern)}"` : null),
   glob: (input) => (input.pattern ? String(input.pattern) : null),
   task: (input) => (input.description ? String(input.description) : null),
+  exec_command: (input) =>
+    input.cmd ? getTruncatedPreview(String(input.cmd)) : null,
+  write_stdin: (input) =>
+    input.session_id ? `session ${String(input.session_id)}` : null,
+  apply_patch: (input) =>
+    typeof input.raw === "string" ? getApplyPatchPreview(input.raw) : null,
+  update_plan: (input) =>
+    Array.isArray(input.plan) ? `${input.plan.length} steps` : null,
+  js_repl: (input) =>
+    typeof input.raw === "string"
+      ? getTruncatedPreview(input.raw.split("\n")[0]?.trim() || "js")
+      : null,
+  spawn_agent: (input) => {
+    if (input.agent_type) {
+      return String(input.agent_type);
+    }
+    if (input.message) {
+      return getTruncatedPreview(String(input.message));
+    }
+    return null;
+  },
+  request_user_input: (input) =>
+    Array.isArray(input.questions)
+      ? `${input.questions.length} question(s)`
+      : null,
+  wait: (input) =>
+    Array.isArray(input.ids) ? `${input.ids.length} agent(s)` : null,
+  close_agent: (input) =>
+    input.id ? getTruncatedPreview(String(input.id), 24) : null,
+  view_image: (input) =>
+    input.path ? getFilePathPreview(String(input.path)) : null,
 };
 
 function getToolPreview(
@@ -275,55 +327,118 @@ interface ToolResultRendererProps {
   isError?: boolean;
 }
 
-function ToolResultRenderer(props: ToolResultRendererProps) {
-  const { toolName, content, isError } = props;
+function tryParseJson(content: string): unknown {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const startsLikeJson =
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[") ||
+    trimmed.startsWith('"') ||
+    trimmed === "null" ||
+    trimmed === "true" ||
+    trimmed === "false" ||
+    /^-?\d/.test(trimmed);
+
+  if (!startsLikeJson) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseExecPreview(content: string): string | null {
+  const outputMarker = "\nOutput:\n";
+  const outputIndex = content.indexOf(outputMarker);
+  const body =
+    outputIndex >= 0
+      ? content.slice(outputIndex + outputMarker.length)
+      : content;
+  const firstLine = body
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+
+  return firstLine ? getTruncatedPreview(firstLine, 60) : null;
+}
+
+function getToolResultPreview(
+  toolName: string,
+  content: string,
+): string | null {
   const name = toolName.toLowerCase();
+  const parsed = tryParseJson(content);
 
-  if (name === "bash") {
-    return <BashResultRenderer content={content} isError={isError} />;
+  if (name === "view_image" && Array.isArray(parsed)) {
+    const imageCount = parsed.filter(
+      (item) => isRecord(item) && item.type === "input_image",
+    ).length;
+    return imageCount > 0
+      ? `${imageCount} image${imageCount > 1 ? "s" : ""}`
+      : null;
   }
 
-  if (name === "glob") {
-    return <SearchResultRenderer content={content} isFileList />;
+  if (name === "spawn_agent" && isRecord(parsed)) {
+    if (typeof parsed.nickname === "string") {
+      return parsed.nickname;
+    }
+    if (typeof parsed.agent_id === "string") {
+      return getTruncatedPreview(parsed.agent_id, 24);
+    }
   }
 
-  if (name === "grep") {
-    return <SearchResultRenderer content={content} />;
+  if (name === "wait" && isRecord(parsed)) {
+    if (typeof parsed.timed_out === "boolean" && parsed.timed_out) {
+      return "timed out";
+    }
+    if (isRecord(parsed.status)) {
+      return `${Object.keys(parsed.status).length} status result(s)`;
+    }
   }
 
-  if (name === "read") {
-    return <FileContentRenderer content={content} />;
+  if (
+    name === "close_agent" &&
+    isRecord(parsed) &&
+    typeof parsed.status === "string"
+  ) {
+    return parsed.status;
   }
 
-  if (!content || content.trim().length === 0) {
-    return (
-      <div className="flex items-center gap-2 px-3 py-2 bg-teal-500/10 border border-teal-500/20 rounded-lg mt-2">
-        <Check size={14} className="text-teal-400" />
-        <span className="text-xs text-teal-300">Completed successfully</span>
-      </div>
-    );
+  if (
+    name === "request_user_input" &&
+    isRecord(parsed) &&
+    isRecord(parsed.answers)
+  ) {
+    return `${Object.keys(parsed.answers).length} answer set(s)`;
   }
 
-  const maxLength = 2000;
-  const truncated = content.length > maxLength;
-  const displayContent = truncated ? content.slice(0, maxLength) : content;
+  if (
+    name === "apply_patch" &&
+    isRecord(parsed) &&
+    typeof parsed.output === "string"
+  ) {
+    return getTruncatedPreview(parsed.output.split("\n")[0]?.trim() || "", 60);
+  }
 
-  return (
-    <pre
-      className={`text-xs rounded-lg p-3 mt-2 overflow-x-auto whitespace-pre-wrap break-all max-h-80 overflow-y-auto border ${
-        isError
-          ? "bg-rose-950/30 text-rose-200/80 border-rose-900/30"
-          : "bg-teal-950/30 text-teal-200/80 border-teal-900/30"
-      }`}
-    >
-      {displayContent}
-      {truncated && (
-        <span className="text-zinc-500">
-          ... ({content.length - maxLength} more chars)
-        </span>
-      )}
-    </pre>
-  );
+  if (name === "exec_command" || name === "write_stdin") {
+    return parseExecPreview(content);
+  }
+
+  return null;
+}
+
+function ToolResultRenderer(props: ToolResultRendererProps) {
+  return <FunctionToolResultRenderer {...props} />;
 }
 
 function ContentBlockRenderer(props: ContentBlockRendererProps) {
@@ -489,14 +604,18 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
     const resultContent = sanitizeText(rawContent);
     const hasContent = resultContent.length > 0;
     const previewLength = 60;
+    const toolName =
+      block.name ||
+      (block.tool_use_id && toolMap
+        ? toolMap.get(block.tool_use_id) || ""
+        : "");
+
     const contentPreview =
       hasContent && !expanded
-        ? resultContent.slice(0, previewLength) +
-          (resultContent.length > previewLength ? "..." : "")
+        ? getToolResultPreview(toolName, resultContent) ||
+          resultContent.slice(0, previewLength) +
+            (resultContent.length > previewLength ? "..." : "")
         : null;
-
-    const toolName =
-      block.tool_use_id && toolMap ? toolMap.get(block.tool_use_id) || "" : "";
 
     return (
       <div className={expanded ? "w-full" : ""}>
