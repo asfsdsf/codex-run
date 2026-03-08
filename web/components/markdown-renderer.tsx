@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CopyButton } from "./tool-renderers";
@@ -8,8 +8,84 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
+function getFencedCodeBlock(content: string, language: string): string {
+  const longestFence = Math.max(
+    3,
+    ...Array.from(content.matchAll(/`+/g), (match) => match[0].length + 1),
+  );
+  const fence = "`".repeat(longestFence);
+  return `${fence}${language}\n${content}\n${fence}`;
+}
+
+const JSON_NUMBER_REGEX = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+const JSON_TOKEN_REGEX =
+  /"(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\],:]/g;
+
+function getJsonTokenClass(token: string, trailingText: string): string {
+  if (token.startsWith('"')) {
+    return /^\s*:/.test(trailingText) ? "text-sky-300" : "text-emerald-300";
+  }
+
+  if (JSON_NUMBER_REGEX.test(token)) {
+    return "text-amber-300";
+  }
+
+  if (token === "true" || token === "false") {
+    return "text-fuchsia-300";
+  }
+
+  if (token === "null") {
+    return "text-zinc-500";
+  }
+
+  return "text-zinc-400";
+}
+
+function renderJsonCode(content: string): ReactNode[] {
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of content.matchAll(JSON_TOKEN_REGEX)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+
+    if (start > lastIndex) {
+      parts.push(content.slice(lastIndex, start));
+    }
+
+    const end = start + token.length;
+    parts.push(
+      <span
+        key={`${start}-${token}`}
+        className={getJsonTokenClass(token, content.slice(end))}
+      >
+        {token}
+      </span>,
+    );
+    lastIndex = end;
+  }
+
+  if (lastIndex < content.length) {
+    parts.push(content.slice(lastIndex));
+  }
+
+  return parts;
+}
+
+function renderCodeContent(language: string, codeContent: string): ReactNode {
+  if (language === "json") {
+    return (
+      <code className="text-[12px] text-zinc-200 leading-relaxed">
+        {renderJsonCode(codeContent)}
+      </code>
+    );
+  }
+
+  return <code>{codeContent}</code>;
+}
+
 export const MarkdownRenderer = memo(function MarkdownRenderer(
-  props: MarkdownRendererProps
+  props: MarkdownRendererProps,
 ) {
   const { content, className = "" } = props;
 
@@ -106,14 +182,25 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(
             );
           },
           pre: (props) => {
-            const { node } = props as { node?: { children?: Array<{ tagName?: string; properties?: { className?: string[] }; children?: Array<{ value?: string }> }> } };
+            const { node } = props as {
+              node?: {
+                children?: Array<{
+                  tagName?: string;
+                  properties?: { className?: string[] };
+                  children?: Array<{ value?: string }>;
+                }>;
+              };
+            };
             const codeNode = node?.children?.[0];
 
             if (codeNode?.tagName === "code") {
               const classNames = codeNode.properties?.className || [];
-              const langClass = classNames.find((c) => c.startsWith("language-"));
+              const langClass = classNames.find((c) =>
+                c.startsWith("language-"),
+              );
               const language = langClass?.replace("language-", "") || "code";
-              const codeContent = codeNode.children?.map((c) => c.value).join("") || "";
+              const codeContent =
+                codeNode.children?.map((c) => c.value).join("") || "";
 
               return (
                 <div className="relative group my-2 rounded-lg overflow-hidden border border-zinc-700/50">
@@ -124,7 +211,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(
                     <CopyButton text={codeContent} />
                   </div>
                   <pre className="text-xs text-zinc-300 bg-zinc-900/80 p-3 overflow-x-auto rounded-t-none!">
-                    <code>{codeContent}</code>
+                    {renderCodeContent(language, codeContent)}
                   </pre>
                 </div>
               );
@@ -151,9 +238,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(
           },
           li: (props) => {
             const { children } = props;
-            return (
-              <li className="text-[13px] leading-relaxed">{children}</li>
-            );
+            return <li className="text-[13px] leading-relaxed">{children}</li>;
           },
           blockquote: (props) => {
             const { children } = props;
@@ -203,3 +288,5 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(
     </div>
   );
 });
+
+export { getFencedCodeBlock };

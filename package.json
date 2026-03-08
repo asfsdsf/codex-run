@@ -4,7 +4,7 @@
   "description": "A beautiful web UI for browsing Codex CLI conversation history",
   "type": "module",
   "bin": {
-    "codex-run": "./dist/index.js"
+    "codex-run": "dist/index.js"
   },
   "main": "./dist/index.js",
   "files": [

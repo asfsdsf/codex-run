@@ -20,20 +20,11 @@ import {
   Bot,
 } from "lucide-react";
 import { sanitizeText } from "../utils";
-import { MarkdownRenderer } from "./markdown-renderer";
+import { getFencedCodeBlock, MarkdownRenderer } from "./markdown-renderer";
 import {
-  TodoRenderer,
-  EditRenderer,
-  WriteRenderer,
-  BashRenderer,
   BashResultRenderer,
-  GrepRenderer,
-  GlobRenderer,
   SearchResultRenderer,
-  ReadRenderer,
   FileContentRenderer,
-  AskQuestionRenderer,
-  TaskRenderer,
 } from "./tool-renderers";
 
 interface MessageBlockProps {
@@ -63,6 +54,24 @@ function getReasoningPreview(text: string, maxLength: number): string {
   return `${normalized.slice(0, maxLength)}...`;
 }
 
+function stringifyJson(value: unknown): string {
+  try {
+    return sanitizeText(JSON.stringify(value, null, 2) ?? "null");
+  } catch {
+    return sanitizeText(String(value));
+  }
+}
+
+function JsonRenderer(props: { value: unknown }) {
+  const content = stringifyJson(props.value);
+
+  if (!content) {
+    return null;
+  }
+
+  return <MarkdownRenderer content={getFencedCodeBlock(content, "json")} />;
+}
+
 const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
   const { message } = props;
 
@@ -86,13 +95,13 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
         b.type === "tool_result" ||
         b.type === "thinking" ||
         b.type === "reasoning" ||
-        b.type === "agent_reasoning"
+        b.type === "agent_reasoning",
     );
   };
 
   const getVisibleTextBlocks = (): ContentBlock[] => {
     return getTextBlocks().filter(
-      (b) => b.text && sanitizeText(b.text).length > 0
+      (b) => b.text && sanitizeText(b.text).length > 0,
     );
   };
 
@@ -108,7 +117,9 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
   const hasText = hasVisibleText();
   const hasAuxiliary = auxiliaryBlocks.length > 0;
 
-  const toolMap = Array.isArray(content) ? buildToolMap(content) : new Map<string, string>();
+  const toolMap = Array.isArray(content)
+    ? buildToolMap(content)
+    : new Map<string, string>();
 
   if (!hasText && hasAuxiliary) {
     return (
@@ -135,17 +146,15 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
           }`}
         >
           {typeof content === "string" ? (
-            isUser ? (
-              <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-                {sanitizeText(content)}
-              </div>
-            ) : (
-              <MarkdownRenderer content={sanitizeText(content)} />
-            )
+            <MarkdownRenderer content={sanitizeText(content)} />
           ) : (
             <div className="flex flex-col gap-1">
               {visibleTextBlocks.map((block, index) => (
-                <ContentBlockRenderer key={index} block={block} isUser={isUser} toolMap={toolMap} />
+                <ContentBlockRenderer
+                  key={index}
+                  block={block}
+                  toolMap={toolMap}
+                />
               ))}
             </div>
           )}
@@ -154,7 +163,11 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
         {hasAuxiliary && (
           <div className="flex flex-col gap-1 mt-1.5">
             {auxiliaryBlocks.map((block, index) => (
-              <ContentBlockRenderer key={index} block={block} toolMap={toolMap} />
+              <ContentBlockRenderer
+                key={index}
+                block={block}
+                toolMap={toolMap}
+              />
             ))}
           </div>
         )}
@@ -165,7 +178,6 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
 
 interface ContentBlockRendererProps {
   block: ContentBlock;
-  isUser?: boolean;
   toolMap?: Map<string, string>;
 }
 
@@ -212,9 +224,12 @@ function getFilePathPreview(filePath: string): string {
 type PreviewHandler = (input: Record<string, unknown>) => string | null;
 
 const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
-  read: (input) => input.file_path ? getFilePathPreview(String(input.file_path)) : null,
-  edit: (input) => input.file_path ? getFilePathPreview(String(input.file_path)) : null,
-  write: (input) => input.file_path ? getFilePathPreview(String(input.file_path)) : null,
+  read: (input) =>
+    input.file_path ? getFilePathPreview(String(input.file_path)) : null,
+  edit: (input) =>
+    input.file_path ? getFilePathPreview(String(input.file_path)) : null,
+  write: (input) =>
+    input.file_path ? getFilePathPreview(String(input.file_path)) : null,
   bash: (input) => {
     if (!input.command) {
       return null;
@@ -222,12 +237,15 @@ const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
     const cmd = String(input.command);
     return cmd.length > 50 ? cmd.slice(0, 50) + "..." : cmd;
   },
-  grep: (input) => input.pattern ? `"${String(input.pattern)}"` : null,
-  glob: (input) => input.pattern ? String(input.pattern) : null,
-  task: (input) => input.description ? String(input.description) : null,
+  grep: (input) => (input.pattern ? `"${String(input.pattern)}"` : null),
+  glob: (input) => (input.pattern ? String(input.pattern) : null),
+  task: (input) => (input.description ? String(input.description) : null),
 };
 
-function getToolPreview(toolName: string, input: Record<string, unknown> | undefined): string | null {
+function getToolPreview(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+): string | null {
   if (!input) {
     return null;
   }
@@ -249,58 +267,6 @@ function getToolPreview(toolName: string, input: Record<string, unknown> | undef
   }
 
   return null;
-}
-
-interface ToolInputRendererProps {
-  toolName: string;
-  input: Record<string, unknown>;
-}
-
-function ToolInputRenderer(props: ToolInputRendererProps) {
-  const { toolName, input } = props;
-  const name = toolName.toLowerCase();
-
-  if (name === "todowrite" && input.todos) {
-    return <TodoRenderer todos={input.todos as Array<{ content: string; status: "pending" | "in_progress" | "completed" }>} />;
-  }
-
-  if (name === "edit" && input.file_path) {
-    return <EditRenderer input={input as { file_path: string; old_string: string; new_string: string }} />;
-  }
-
-  if (name === "write" && input.file_path) {
-    return <WriteRenderer input={input as { file_path: string; content: string }} />;
-  }
-
-  if (name === "bash" && input.command) {
-    return <BashRenderer input={input as { command: string; description?: string }} />;
-  }
-
-  if (name === "grep" && input.pattern) {
-    return <GrepRenderer input={input as { pattern: string; path?: string; glob?: string; type?: string }} />;
-  }
-
-  if (name === "glob" && input.pattern) {
-    return <GlobRenderer input={input as { pattern: string; path?: string }} />;
-  }
-
-  if (name === "read" && input.file_path) {
-    return <ReadRenderer input={input as { file_path: string; offset?: number; limit?: number }} />;
-  }
-
-  if (name === "askuserquestion" && input.questions) {
-    return <AskQuestionRenderer input={input as { questions: Array<{ header: string; question: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }} />;
-  }
-
-  if (name === "task" && input.prompt) {
-    return <TaskRenderer input={input as { description: string; prompt: string; subagent_type: string; model?: string; run_in_background?: boolean; resume?: string }} />;
-  }
-
-  return (
-    <pre className="text-xs text-slate-300 bg-slate-900/50 border border-slate-700/50 rounded-lg p-3 mt-2 overflow-x-auto whitespace-pre-wrap break-all max-h-80 overflow-y-auto">
-      {JSON.stringify(input, null, 2)}
-    </pre>
-  );
 }
 
 interface ToolResultRendererProps {
@@ -351,26 +317,23 @@ function ToolResultRenderer(props: ToolResultRendererProps) {
       }`}
     >
       {displayContent}
-      {truncated && <span className="text-zinc-500">... ({content.length - maxLength} more chars)</span>}
+      {truncated && (
+        <span className="text-zinc-500">
+          ... ({content.length - maxLength} more chars)
+        </span>
+      )}
     </pre>
   );
 }
 
 function ContentBlockRenderer(props: ContentBlockRendererProps) {
-  const { block, isUser, toolMap } = props;
+  const { block, toolMap } = props;
   const [expanded, setExpanded] = useState(false);
 
   if (block.type === "text" && block.text) {
     const sanitized = sanitizeText(block.text);
     if (!sanitized) {
       return null;
-    }
-    if (isUser) {
-      return (
-        <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-          {sanitized}
-        </div>
-      );
     }
     return <MarkdownRenderer content={sanitized} />;
   }
@@ -409,8 +372,8 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
           <Bot size={12} className="opacity-75" />
           <span className="font-medium">agent step</span>
         </div>
-        <div className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fuchsia-100/90">
-          {reasoningText}
+        <div className="mt-2">
+          <MarkdownRenderer content={reasoningText} />
         </div>
       </div>
     );
@@ -431,8 +394,8 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
             <Lightbulb size={12} className="opacity-75" />
             <span className="font-medium">reasoning</span>
           </div>
-          <div className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-amber-100/90">
-            {reasoningText}
+          <div className="mt-2">
+            <MarkdownRenderer content={reasoningText} />
           </div>
         </div>
       );
@@ -457,9 +420,7 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
         </button>
         {expanded && (
           <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/8 px-3 py-2.5">
-            <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-amber-100/90">
-              {reasoningText}
-            </div>
+            <MarkdownRenderer content={reasoningText} />
           </div>
         )}
       </div>
@@ -468,30 +429,26 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
 
   if (block.type === "tool_use") {
     const input =
-      block.input && typeof block.input === "object" ? block.input as Record<string, unknown> : undefined;
+      block.input && typeof block.input === "object"
+        ? (block.input as Record<string, unknown>)
+        : undefined;
     const hasInput = input && Object.keys(input).length > 0;
     const Icon = getToolIcon(block.name || "");
     const preview = getToolPreview(block.name || "", input);
     const toolName = block.name?.toLowerCase() || "";
 
-    const hasSpecialRenderer =
+    const shouldAutoExpand =
       toolName === "todowrite" ||
-      toolName === "edit" ||
-      toolName === "write" ||
-      toolName === "bash" ||
-      toolName === "grep" ||
-      toolName === "glob" ||
-      toolName === "read" ||
       toolName === "askuserquestion" ||
       toolName === "task";
-
-    const shouldAutoExpand = toolName === "todowrite" || toolName === "askuserquestion" || toolName === "task";
     const isExpanded = expanded || shouldAutoExpand;
 
     return (
       <div className={isExpanded ? "w-full" : ""}>
         <button
-          onClick={() => hasInput && !shouldAutoExpand && setExpanded(!expanded)}
+          onClick={() =>
+            hasInput && !shouldAutoExpand && setExpanded(!expanded)
+          }
           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-500/10 hover:bg-slate-500/15 text-[11px] text-slate-300 transition-colors border border-slate-500/20"
         >
           <Icon size={12} className="opacity-60" />
@@ -507,15 +464,17 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
             </span>
           )}
         </button>
-        {isExpanded && hasInput && hasSpecialRenderer ? (
-          <ToolInputRenderer toolName={block.name || ""} input={input} />
-        ) : (
-          expanded &&
-          hasInput && (
-            <pre className="text-xs text-slate-300 bg-slate-900/50 border border-slate-700/50 rounded-lg p-3 mt-2 overflow-x-auto whitespace-pre-wrap break-all max-h-80 overflow-y-auto">
-              {JSON.stringify(input, null, 2)}
-            </pre>
-          )
+        {isExpanded && hasInput && (
+          <div className="mt-2">
+            <JsonRenderer
+              value={{
+                type: block.type,
+                id: block.id,
+                name: block.name,
+                input,
+              }}
+            />
+          </div>
         )}
       </div>
     );
@@ -532,10 +491,12 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
     const previewLength = 60;
     const contentPreview =
       hasContent && !expanded
-        ? resultContent.slice(0, previewLength) + (resultContent.length > previewLength ? "..." : "")
+        ? resultContent.slice(0, previewLength) +
+          (resultContent.length > previewLength ? "..." : "")
         : null;
 
-    const toolName = block.tool_use_id && toolMap ? toolMap.get(block.tool_use_id) || "" : "";
+    const toolName =
+      block.tool_use_id && toolMap ? toolMap.get(block.tool_use_id) || "" : "";
 
     return (
       <div className={expanded ? "w-full" : ""}>
