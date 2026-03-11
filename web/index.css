@@ -32,8 +32,9 @@
 }
 
 body {
-  font-family: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
-    Consolas, monospace;
+  font-family:
+    "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    monospace;
   background: #09090b;
 }
 
@@ -68,9 +69,73 @@ pre {
 }
 
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.875rem;
+}
+
+.patch-syntax {
+  color: #d4d4d8;
+}
+
+.patch-syntax .hljs-comment,
+.patch-syntax .hljs-quote {
+  color: #71717a;
+  font-style: italic;
+}
+
+.patch-syntax .hljs-keyword,
+.patch-syntax .hljs-selector-tag,
+.patch-syntax .hljs-built_in,
+.patch-syntax .hljs-type,
+.patch-syntax .hljs-name {
+  color: #60a5fa;
+}
+
+.patch-syntax .hljs-title,
+.patch-syntax .hljs-title.class_,
+.patch-syntax .hljs-title.class_.inherited__,
+.patch-syntax .hljs-title.function_ {
+  color: #22d3ee;
+}
+
+.patch-syntax .hljs-string,
+.patch-syntax .hljs-regexp,
+.patch-syntax .hljs-template-tag,
+.patch-syntax .hljs-template-variable,
+.patch-syntax .hljs-subst {
+  color: #86efac;
+}
+
+.patch-syntax .hljs-number,
+.patch-syntax .hljs-literal,
+.patch-syntax .hljs-symbol,
+.patch-syntax .hljs-bullet {
+  color: #fbbf24;
+}
+
+.patch-syntax .hljs-attr,
+.patch-syntax .hljs-attribute,
+.patch-syntax .hljs-property,
+.patch-syntax .hljs-params,
+.patch-syntax .hljs-variable,
+.patch-syntax .hljs-link {
+  color: #f472b6;
+}
+
+.patch-syntax .hljs-meta,
+.patch-syntax .hljs-meta .hljs-keyword,
+.patch-syntax .hljs-doctag {
+  color: #c4b5fd;
+}
+
+.patch-syntax .hljs-addition {
+  color: #86efac;
+}
+
+.patch-syntax .hljs-deletion {
+  color: #fda4af;
 }
 
 select option {
