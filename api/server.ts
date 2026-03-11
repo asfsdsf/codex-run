@@ -14,6 +14,8 @@ import {
   getConversationStream,
   invalidateHistoryCache,
   addToFileIndex,
+  type CreateCodexThreadRequest,
+  type SendCodexMessageRequest,
 } from "./storage";
 import {
   initWatcher,
@@ -28,6 +30,14 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, existsSync } from "fs";
 import open from "open";
+import {
+  CodexAppServerRpcError,
+  CodexAppServerTransportError,
+  closeCodexAppServerClient,
+  getCodexAppServerClient,
+  isCodexReasoningEffort,
+  type CodexReasoningEffort,
+} from "./codex-app-server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,6 +48,55 @@ function getWebDistPath(): string {
     return prodPath;
   }
   return join(__dirname, "..", "dist", "web");
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Unknown error";
+}
+
+function parseOptionalString(value: unknown): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized ? normalized : null;
+}
+
+function parseOptionalEffort(
+  value: unknown,
+): CodexReasoningEffort | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  return isCodexReasoningEffort(value) ? value : undefined;
+}
+
+function responseStatusForError(error: unknown): number {
+  if (error instanceof CodexAppServerTransportError) {
+    return 503;
+  }
+  if (error instanceof CodexAppServerRpcError) {
+    return 500;
+  }
+  if (error instanceof SyntaxError) {
+    return 400;
+  }
+  return 500;
 }
 
 export interface ServerOptions {
@@ -223,6 +282,107 @@ export function createServer(options: ServerOptions) {
     });
   });
 
+  app.get("/api/codex/models", async (c) => {
+    try {
+      const models = await getCodexAppServerClient().listModels();
+      return c.json({ models });
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
+  app.post("/api/codex/threads", async (c) => {
+    try {
+      const body = (await c.req.json()) as Partial<CreateCodexThreadRequest>;
+      const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
+      if (!cwd) {
+        return c.json(
+          {
+            error: "cwd is required",
+          },
+          400,
+        );
+      }
+
+      const model = parseOptionalString(body.model);
+      if (body.model !== undefined && model === undefined) {
+        return c.json({ error: "model must be a string or null" }, 400);
+      }
+
+      const effort = parseOptionalEffort(body.effort);
+      if (body.effort !== undefined && effort === undefined) {
+        return c.json({ error: "effort is invalid" }, 400);
+      }
+
+      const threadId = await getCodexAppServerClient().createThread({
+        cwd,
+        model,
+        effort,
+      });
+
+      return c.json({ threadId });
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
+  app.post("/api/codex/threads/:id/messages", async (c) => {
+    const threadId = c.req.param("id")?.trim();
+    if (!threadId) {
+      return c.json({ error: "thread id is required" }, 400);
+    }
+
+    try {
+      const body = (await c.req.json()) as Partial<SendCodexMessageRequest>;
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!text) {
+        return c.json({ error: "text is required" }, 400);
+      }
+
+      const cwd = parseOptionalString(body.cwd);
+      if (body.cwd !== undefined && cwd === undefined) {
+        return c.json({ error: "cwd must be a string" }, 400);
+      }
+
+      const model = parseOptionalString(body.model);
+      if (body.model !== undefined && model === undefined) {
+        return c.json({ error: "model must be a string or null" }, 400);
+      }
+
+      const effort = parseOptionalEffort(body.effort);
+      if (body.effort !== undefined && effort === undefined) {
+        return c.json({ error: "effort is invalid" }, 400);
+      }
+
+      await getCodexAppServerClient().sendMessage({
+        threadId,
+        text,
+        ...(cwd ? { cwd } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(effort !== undefined ? { effort } : {}),
+      });
+
+      return c.json({ ok: true });
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
   const webDistPath = getWebDistPath();
 
   app.use("/*", serveStatic({ root: webDistPath }));
@@ -270,6 +430,7 @@ export function createServer(options: ServerOptions) {
     },
     stop: () => {
       stopWatcher();
+      void closeCodexAppServerClient();
       if (httpServer) {
         httpServer.close();
       }

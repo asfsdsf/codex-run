@@ -17,6 +17,41 @@ export interface Session {
   projectName: string;
 }
 
+export type CodexReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
+export interface CodexModelOption {
+  id: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+  hidden: boolean;
+  defaultReasoningEffort: CodexReasoningEffort | null;
+  supportedReasoningEfforts: CodexReasoningEffort[];
+}
+
+export interface CreateCodexThreadRequest {
+  cwd: string;
+  model?: string | null;
+  effort?: CodexReasoningEffort | null;
+}
+
+export interface CreateCodexThreadResponse {
+  threadId: string;
+}
+
+export interface SendCodexMessageRequest {
+  text: string;
+  cwd?: string;
+  model?: string | null;
+  effort?: CodexReasoningEffort | null;
+}
+
 export interface ConversationMessage {
   type:
     | "user"
