@@ -14,8 +14,10 @@ import {
   getConversationStream,
   invalidateHistoryCache,
   addToFileIndex,
+  type CodexThreadStateResponse,
   type CreateCodexThreadRequest,
   type SendCodexMessageRequest,
+  type SendCodexMessageResponse,
 } from "./storage";
 import {
   initWatcher,
@@ -364,7 +366,7 @@ export function createServer(options: ServerOptions) {
         return c.json({ error: "effort is invalid" }, 400);
       }
 
-      await getCodexAppServerClient().sendMessage({
+      const result = await getCodexAppServerClient().sendMessage({
         threadId,
         text,
         ...(cwd ? { cwd } : {}),
@@ -372,6 +374,64 @@ export function createServer(options: ServerOptions) {
         ...(effort !== undefined ? { effort } : {}),
       });
 
+      const response: SendCodexMessageResponse = {
+        ok: true,
+        turnId: result.turnId,
+      };
+      return c.json(response);
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
+  app.get("/api/codex/threads/:id/state", async (c) => {
+    const threadId = c.req.param("id")?.trim();
+    if (!threadId) {
+      return c.json({ error: "thread id is required" }, 400);
+    }
+
+    const requestedTurnIdRaw = c.req.query("turnId");
+    const requestedTurnId =
+      typeof requestedTurnIdRaw === "string" && requestedTurnIdRaw.trim()
+        ? requestedTurnIdRaw.trim()
+        : null;
+
+    try {
+      const state = await getCodexAppServerClient().getThreadState(
+        threadId,
+        requestedTurnId,
+      );
+      const response: CodexThreadStateResponse = {
+        threadId: state.threadId,
+        activeTurnId: state.activeTurnId,
+        isGenerating: state.isGenerating,
+        requestedTurnId: state.requestedTurnId,
+        requestedTurnStatus: state.requestedTurnStatus,
+      };
+      return c.json(response);
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
+  app.post("/api/codex/threads/:id/interrupt", async (c) => {
+    const threadId = c.req.param("id")?.trim();
+    if (!threadId) {
+      return c.json({ error: "thread id is required" }, 400);
+    }
+
+    try {
+      await getCodexAppServerClient().interruptThread(threadId);
       return c.json({ ok: true });
     } catch (error) {
       return c.json(

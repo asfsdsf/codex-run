@@ -38,6 +38,29 @@ export interface SendCodexMessageInput {
   effort?: CodexReasoningEffort | null;
 }
 
+export interface SendCodexMessageResult {
+  turnId: string | null;
+}
+
+export type CodexTurnStatus =
+  | "inProgress"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+export interface CodexThreadState {
+  threadId: string;
+  activeTurnId: string | null;
+  isGenerating: boolean;
+  requestedTurnId: string | null;
+  requestedTurnStatus: CodexTurnStatus | null;
+}
+
+interface AppServerTurnRecord {
+  id?: unknown;
+  status?: unknown;
+}
+
 export class CodexAppServerRpcError extends Error {
   public readonly code: number;
   public readonly data: unknown;
@@ -191,7 +214,9 @@ class CodexAppServerClient {
     return threadId;
   }
 
-  public async sendMessage(input: SendCodexMessageInput): Promise<void> {
+  public async sendMessage(
+    input: SendCodexMessageInput,
+  ): Promise<SendCodexMessageResult> {
     const threadId = input.threadId.trim();
     if (!threadId) {
       throw new Error("threadId is required");
@@ -221,15 +246,107 @@ class CodexAppServerClient {
     }
 
     try {
-      await this.request("turn/start", params);
+      const result = await this.request("turn/start", params);
+      return {
+        turnId: extractTurnIdFromTurnStartResult(result),
+      };
     } catch (error) {
       if (!shouldRetryAfterResume(error)) {
         throw error;
       }
 
       await this.resumeThread(threadId);
-      await this.request("turn/start", params);
+      const result = await this.request("turn/start", params);
+      return {
+        turnId: extractTurnIdFromTurnStartResult(result),
+      };
     }
+  }
+
+  public async interruptThread(threadId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) {
+      throw new Error("threadId is required");
+    }
+
+    const threadState = await this.getThreadState(normalizedThreadId);
+    const activeTurnId = threadState.activeTurnId;
+    if (!activeTurnId) {
+      return;
+    }
+
+    try {
+      await this.request("turn/interrupt", {
+        threadId: normalizedThreadId,
+        turnId: activeTurnId,
+      });
+    } catch (error) {
+      if (!shouldRetryAfterResume(error)) {
+        throw error;
+      }
+
+      await this.resumeThread(normalizedThreadId);
+      const refreshedThreadState = await this.getThreadState(normalizedThreadId);
+      if (!refreshedThreadState.activeTurnId) {
+        return;
+      }
+
+      await this.request("turn/interrupt", {
+        threadId: normalizedThreadId,
+        turnId: refreshedThreadState.activeTurnId,
+      });
+    }
+  }
+
+  public async getThreadState(
+    threadId: string,
+    requestedTurnId?: string | null,
+  ): Promise<CodexThreadState> {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) {
+      throw new Error("threadId is required");
+    }
+
+    const normalizedRequestedTurnId =
+      typeof requestedTurnId === "string" && requestedTurnId.trim()
+        ? requestedTurnId.trim()
+        : null;
+
+    const result = await this.readThreadWithTurns(normalizedThreadId);
+
+    const turns = extractTurnsFromThreadReadResult(result);
+    let activeTurnId: string | null = null;
+    let requestedTurnStatus: CodexTurnStatus | null = null;
+
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const turn = turns[index];
+      if (!turn || typeof turn !== "object") {
+        continue;
+      }
+
+      const turnId = asString(turn.id)?.trim() ?? "";
+      const turnStatus = toTurnStatus(turn.status);
+
+      if (
+        normalizedRequestedTurnId &&
+        turnId === normalizedRequestedTurnId &&
+        turnStatus
+      ) {
+        requestedTurnStatus = turnStatus;
+      }
+
+      if (!activeTurnId && turnStatus === "inProgress" && turnId) {
+        activeTurnId = turnId;
+      }
+    }
+
+    return {
+      threadId: normalizedThreadId,
+      activeTurnId,
+      isGenerating: activeTurnId !== null,
+      requestedTurnId: normalizedRequestedTurnId,
+      requestedTurnStatus,
+    };
   }
 
   private async resumeThread(threadId: string): Promise<void> {
@@ -237,6 +354,24 @@ class CodexAppServerClient {
       threadId,
       persistExtendedHistory: true,
     });
+  }
+
+  private async readThreadWithTurns(threadId: string): Promise<unknown> {
+    const requestPayload = {
+      threadId,
+      includeTurns: true,
+    };
+
+    try {
+      return await this.request("thread/read", requestPayload);
+    } catch (error) {
+      if (!shouldRetryAfterResume(error)) {
+        throw error;
+      }
+
+      await this.resumeThread(threadId);
+      return await this.request("thread/read", requestPayload);
+    }
   }
 
   public async close(): Promise<void> {
@@ -569,6 +704,50 @@ function collectSupportedReasoningEfforts(value: unknown): CodexReasoningEffort[
   return [...efforts];
 }
 
+function extractTurnsFromThreadReadResult(result: unknown): AppServerTurnRecord[] {
+  if (!result || typeof result !== "object") {
+    return [];
+  }
+
+  const threadValue = (result as { thread?: unknown }).thread;
+  if (!threadValue || typeof threadValue !== "object") {
+    return [];
+  }
+
+  const turnsValue = (threadValue as { turns?: unknown }).turns;
+  if (!Array.isArray(turnsValue) || turnsValue.length === 0) {
+    return [];
+  }
+
+  return turnsValue as AppServerTurnRecord[];
+}
+
+function extractTurnIdFromTurnStartResult(result: unknown): string | null {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+
+  const turnValue = (result as { turn?: unknown }).turn;
+  if (!turnValue || typeof turnValue !== "object") {
+    return null;
+  }
+
+  const turnId = asString((turnValue as { id?: unknown }).id)?.trim();
+  return turnId || null;
+}
+
+function toTurnStatus(value: unknown): CodexTurnStatus | null {
+  if (
+    value === "inProgress" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "interrupted"
+  ) {
+    return value;
+  }
+  return null;
+}
+
 function shouldRetryAfterResume(error: unknown): boolean {
   if (!(error instanceof CodexAppServerRpcError)) {
     return false;
@@ -601,7 +780,12 @@ let client: CodexAppServerClient | null = null;
 export function getCodexAppServerClient(): {
   listModels: (limit?: number) => Promise<CodexModelOption[]>;
   createThread: (input: CreateCodexThreadInput) => Promise<string>;
-  sendMessage: (input: SendCodexMessageInput) => Promise<void>;
+  sendMessage: (input: SendCodexMessageInput) => Promise<SendCodexMessageResult>;
+  getThreadState: (
+    threadId: string,
+    requestedTurnId?: string | null,
+  ) => Promise<CodexThreadState>;
+  interruptThread: (threadId: string) => Promise<void>;
 } {
   if (!client) {
     client = new CodexAppServerClient();
@@ -611,6 +795,9 @@ export function getCodexAppServerClient(): {
     listModels: (limit?: number) => client!.listModels(limit),
     createThread: (input: CreateCodexThreadInput) => client!.createThread(input),
     sendMessage: (input: SendCodexMessageInput) => client!.sendMessage(input),
+    getThreadState: (threadId: string, requestedTurnId?: string | null) =>
+      client!.getThreadState(threadId, requestedTurnId),
+    interruptThread: (threadId: string) => client!.interruptThread(threadId),
   };
 }
 

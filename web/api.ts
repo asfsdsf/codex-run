@@ -1,8 +1,10 @@
 import type {
+  CodexThreadStateResponse,
   CodexModelOption,
   CreateCodexThreadRequest,
   CreateCodexThreadResponse,
   SendCodexMessageRequest,
+  SendCodexMessageResponse,
 } from "@codex-run/api";
 
 interface ApiErrorPayload {
@@ -13,7 +15,7 @@ interface CodexModelsResponse {
   models: CodexModelOption[];
 }
 
-interface SendCodexMessageResponse {
+interface InterruptCodexThreadResponse {
   ok: boolean;
 }
 
@@ -61,6 +63,31 @@ export async function sendCodexMessage(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function getCodexThreadState(
+  threadId: string,
+  turnId?: string | null,
+): Promise<CodexThreadStateResponse> {
+  const params = new URLSearchParams();
+  if (typeof turnId === "string" && turnId.trim()) {
+    params.set("turnId", turnId.trim());
+  }
+  const query = params.toString();
+  return requestJson<CodexThreadStateResponse>(
+    `/api/codex/threads/${encodeURIComponent(threadId)}/state${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function interruptCodexThread(
+  threadId: string,
+): Promise<InterruptCodexThreadResponse> {
+  return requestJson<InterruptCodexThreadResponse>(
+    `/api/codex/threads/${encodeURIComponent(threadId)}/interrupt`,
+    {
+      method: "POST",
     },
   );
 }

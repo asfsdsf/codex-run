@@ -52,6 +52,25 @@ export interface SendCodexMessageRequest {
   effort?: CodexReasoningEffort | null;
 }
 
+export interface SendCodexMessageResponse {
+  ok: boolean;
+  turnId: string | null;
+}
+
+export type CodexTurnStatus =
+  | "inProgress"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+export interface CodexThreadStateResponse {
+  threadId: string;
+  activeTurnId: string | null;
+  isGenerating: boolean;
+  requestedTurnId: string | null;
+  requestedTurnStatus: CodexTurnStatus | null;
+}
+
 export interface ConversationMessage {
   type:
     | "user"

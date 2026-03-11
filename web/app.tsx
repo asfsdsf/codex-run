@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type {
   Session,
   CodexModelOption,
@@ -11,6 +11,8 @@ import SessionView from "./components/session-view";
 import { useEventSource } from "./hooks/use-event-source";
 import {
   createCodexThread,
+  getCodexThreadState,
+  interruptCodexThread,
   listCodexModels,
   sendCodexMessage,
 } from "./api";
@@ -31,6 +33,12 @@ const REASONING_EFFORTS: CodexReasoningEffort[] = [
 ];
 
 const DEFAULT_OPTION_VALUE = "__default__";
+const TURN_STATE_POLL_INTERVAL_MS = 1000;
+
+interface PendingTurn {
+  sessionId: string;
+  turnId: string | null;
+}
 
 function SessionHeader(props: SessionHeaderProps) {
   const { session, copied, onCopyResumeCommand } = props;
@@ -84,8 +92,11 @@ function App() {
   const [messageDraft, setMessageDraft] = useState("");
   const [newSessionCwd, setNewSessionCwd] = useState("");
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [stoppingTurn, setStoppingTurn] = useState(false);
+  const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null);
   const [creatingSession, setCreatingSession] = useState(false);
   const [interactionError, setInteractionError] = useState<string | null>(null);
+  const waitSuppressSessionsRef = useRef<Set<string>>(new Set());
 
   const handleCopyResumeCommand = useCallback(
     (sessionId: string, projectPath: string) => {
@@ -282,7 +293,11 @@ function App() {
   ]);
 
   const handleSendMessage = useCallback(async () => {
-    if (!selectedSession || sendingMessage) {
+    if (
+      !selectedSession ||
+      sendingMessage ||
+      pendingTurn?.sessionId === selectedSession
+    ) {
       return;
     }
 
@@ -293,9 +308,10 @@ function App() {
 
     setSendingMessage(true);
     setInteractionError(null);
+    waitSuppressSessionsRef.current.delete(selectedSession);
 
     try {
-      await sendCodexMessage(selectedSession, {
+      const response = await sendCodexMessage(selectedSession, {
         text,
         ...(selectedSessionData?.project
           ? { cwd: selectedSessionData.project }
@@ -305,6 +321,10 @@ function App() {
       });
 
       setMessageDraft("");
+      setPendingTurn({
+        sessionId: selectedSession,
+        turnId: response.turnId,
+      });
     } catch (error) {
       setInteractionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -314,10 +334,169 @@ function App() {
     selectedSession,
     sendingMessage,
     messageDraft,
+    pendingTurn?.sessionId,
     selectedSessionData?.project,
     selectedModelId,
     selectedEffort,
   ]);
+
+  const handleStopConversation = useCallback(async () => {
+    if (!selectedSession || pendingTurn?.sessionId !== selectedSession || stoppingTurn) {
+      return;
+    }
+
+    const targetSessionId = selectedSession;
+    waitSuppressSessionsRef.current.add(targetSessionId);
+    // Always unlock UI immediately on manual stop, even if interrupt request is slow.
+    setPendingTurn(null);
+    setStoppingTurn(true);
+    setInteractionError(null);
+
+    void (async () => {
+      try {
+        await interruptCodexThread(targetSessionId);
+      } catch (error) {
+        setInteractionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setStoppingTurn(false);
+      }
+    })();
+  }, [selectedSession, pendingTurn, stoppingTurn]);
+
+  useEffect(() => {
+    if (!pendingTurn) {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const pollTurnState = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+
+      inFlight = true;
+      try {
+        const state = await getCodexThreadState(
+          pendingTurn.sessionId,
+          pendingTurn.turnId,
+        );
+        if (cancelled) {
+          return;
+        }
+
+        if (pendingTurn.turnId) {
+          if (
+            state.requestedTurnStatus === "completed" ||
+            state.requestedTurnStatus === "failed" ||
+            state.requestedTurnStatus === "interrupted"
+          ) {
+            setPendingTurn(null);
+            return;
+          }
+
+          if (!state.isGenerating && state.requestedTurnStatus === null) {
+            setPendingTurn(null);
+          }
+          return;
+        }
+
+        if (state.activeTurnId) {
+          setPendingTurn((current) => {
+            if (
+              !current ||
+              current.sessionId !== pendingTurn.sessionId ||
+              current.turnId === state.activeTurnId
+            ) {
+              return current;
+            }
+            return {
+              ...current,
+              turnId: state.activeTurnId,
+            };
+          });
+        }
+
+        if (!state.isGenerating) {
+          setPendingTurn(null);
+        }
+      } catch {
+        // Keep waiting if state polling fails transiently.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void pollTurnState();
+    const interval = setInterval(() => {
+      void pollTurnState();
+    }, TURN_STATE_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [pendingTurn]);
+
+  useEffect(() => {
+    if (!selectedSession || pendingTurn?.sessionId === selectedSession) {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const pollSelectedThreadState = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+
+      inFlight = true;
+      try {
+        if (waitSuppressSessionsRef.current.has(selectedSession)) {
+          return;
+        }
+
+        const state = await getCodexThreadState(selectedSession);
+        if (cancelled || !state.isGenerating) {
+          return;
+        }
+
+        setPendingTurn((current) => {
+          if (
+            current &&
+            current.sessionId === selectedSession &&
+            current.turnId === state.activeTurnId
+          ) {
+            return current;
+          }
+          return {
+            sessionId: selectedSession,
+            turnId: state.activeTurnId ?? null,
+          };
+        });
+      } catch {
+        // Ignore transient polling errors.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void pollSelectedThreadState();
+    const interval = setInterval(() => {
+      void pollSelectedThreadState();
+    }, TURN_STATE_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [selectedSession, pendingTurn?.sessionId]);
+
+  const isGeneratingForSelectedSession =
+    !!selectedSession && pendingTurn?.sessionId === selectedSession;
+  const isSendingLocked = isGeneratingForSelectedSession || sendingMessage;
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-100">
@@ -407,6 +586,13 @@ function App() {
               </div>
 
               <div className="border-t border-zinc-800/60 bg-zinc-950 p-3 space-y-2">
+                {isGeneratingForSelectedSession && (
+                  <div className="flex items-center gap-2 text-sm text-zinc-300">
+                    <span className="thinking-dot" />
+                    <span className="thinking-label">Thinking...</span>
+                  </div>
+                )}
+
                 <div className="flex flex-wrap items-center gap-2">
                   <select
                     value={selectedModelId || DEFAULT_OPTION_VALUE}
@@ -451,11 +637,13 @@ function App() {
                   <textarea
                     value={messageDraft}
                     onChange={(event) => setMessageDraft(event.target.value)}
+                    disabled={isSendingLocked}
                     onKeyDown={(event) => {
                       if (
                         event.key === "Enter" &&
                         !event.shiftKey &&
-                        !event.nativeEvent.isComposing
+                        !event.nativeEvent.isComposing &&
+                        !isGeneratingForSelectedSession
                       ) {
                         event.preventDefault();
                         void handleSendMessage();
@@ -467,12 +655,30 @@ function App() {
                   />
                   <button
                     onClick={() => {
+                      if (isGeneratingForSelectedSession) {
+                        void handleStopConversation();
+                        return;
+                      }
                       void handleSendMessage();
                     }}
-                    disabled={sendingMessage || !messageDraft.trim()}
-                    className="h-10 px-4 text-sm rounded bg-cyan-700/80 hover:bg-cyan-700 text-zinc-50 disabled:opacity-50 cursor-pointer"
+                    disabled={
+                      isGeneratingForSelectedSession
+                        ? stoppingTurn
+                        : sendingMessage || isSendingLocked || !messageDraft.trim()
+                    }
+                    className={`h-10 px-4 text-sm rounded text-zinc-50 disabled:opacity-50 cursor-pointer ${
+                      isGeneratingForSelectedSession
+                        ? "bg-red-700/90 hover:bg-red-700"
+                        : "bg-cyan-700/80 hover:bg-cyan-700"
+                    }`}
                   >
-                    {sendingMessage ? "Sending..." : "Send"}
+                    {isGeneratingForSelectedSession
+                      ? stoppingTurn
+                        ? "Stopping..."
+                        : "Stop"
+                      : sendingMessage
+                        ? "Sending..."
+                        : "Send"}
                   </button>
                 </div>
               </div>
