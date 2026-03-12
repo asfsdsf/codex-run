@@ -10,6 +10,7 @@ import {
   getCodexDir,
   getSessions,
   getProjects,
+  getSessionContext,
   getConversation,
   getConversationStream,
   invalidateHistoryCache,
@@ -206,6 +207,25 @@ export function createServer(options: ServerOptions) {
         cleanup();
       }
     });
+  });
+
+  app.get("/api/sessions/:id/context", async (c) => {
+    const sessionId = c.req.param("id")?.trim();
+    if (!sessionId) {
+      return c.json({ error: "session id is required" }, 400);
+    }
+
+    try {
+      const context = await getSessionContext(sessionId);
+      return c.json(context);
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
   });
 
   app.get("/api/conversation/:id", async (c) => {

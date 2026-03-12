@@ -307,8 +307,16 @@ function getApplyPatchPreview(raw: string): string | null {
   return getFilePathPreview(match[1].trim());
 }
 
-const PATCH_FILE_HEADER_REGEX = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/;
+const PATCH_FILE_HEADER_REGEX = /^\*\*\* (Add|Update|Delete) File: (.+)$/;
 const PATCH_MOVE_TO_HEADER_REGEX = /^\*\*\* Move to: (.+)$/;
+const PATCH_UNIFIED_HUNK_HEADER_REGEX =
+  /^@@\s*-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@/;
+
+type PatchFileOperation = "add" | "update" | "delete";
+type PatchLineNumberState = {
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+};
 
 type PatchLanguageInfo = {
   label: string;
@@ -410,10 +418,71 @@ function getPatchFileTypes(raw: string): string[] {
     if (!match) {
       continue;
     }
-    types.add(detectLanguageFromPath(match[1].trim()).label);
+    types.add(detectLanguageFromPath(match[2].trim()).label);
   }
 
   return [...types];
+}
+
+function getPatchFileOperation(line: string): PatchFileOperation | null {
+  const fileHeaderMatch = line.match(PATCH_FILE_HEADER_REGEX);
+  if (!fileHeaderMatch) {
+    return null;
+  }
+
+  const operation = fileHeaderMatch[1].toLowerCase();
+  if (operation === "add" || operation === "update" || operation === "delete") {
+    return operation;
+  }
+  return null;
+}
+
+function getPatchHunkStartLineNumbers(line: string): PatchLineNumberState | null {
+  const hunkMatch = line.match(PATCH_UNIFIED_HUNK_HEADER_REGEX);
+  if (!hunkMatch) {
+    return null;
+  }
+
+  return {
+    oldLineNumber: Number.parseInt(hunkMatch[1], 10),
+    newLineNumber: Number.parseInt(hunkMatch[2], 10),
+  };
+}
+
+function getPatchLineNumbersForCodeLine(
+  prefix: string,
+  state: PatchLineNumberState,
+): { oldLine: number | null; newLine: number | null } {
+  if (prefix === "+") {
+    const newLine = state.newLineNumber;
+    if (state.newLineNumber !== null) {
+      state.newLineNumber += 1;
+    }
+    return { oldLine: null, newLine };
+  }
+
+  if (prefix === "-") {
+    const oldLine = state.oldLineNumber;
+    if (state.oldLineNumber !== null) {
+      state.oldLineNumber += 1;
+    }
+    return { oldLine, newLine: null };
+  }
+
+  const oldLine = state.oldLineNumber;
+  const newLine = state.newLineNumber;
+  if (state.oldLineNumber !== null) {
+    state.oldLineNumber += 1;
+  }
+  if (state.newLineNumber !== null) {
+    state.newLineNumber += 1;
+  }
+
+  return { oldLine, newLine };
+}
+
+function getPatchLineNumberDisplay(value: number | null): string {
+  return value === null ? " " : String(value);
 }
 
 function getPatchLineClass(line: string): string {
@@ -510,13 +579,32 @@ function ApplyPatchInputRenderer(props: {
       <pre className="m-0 max-h-[420px] overflow-auto rounded-none border-0 bg-transparent p-0 text-xs leading-relaxed">
         {(() => {
           let activeLanguage: string | null = null;
+          let currentFileOperation: PatchFileOperation | null = null;
+          const lineNumberState: PatchLineNumberState = {
+            oldLineNumber: null,
+            newLineNumber: null,
+          };
 
           return lines.map((line, index) => {
             const fileHeaderMatch = line.match(PATCH_FILE_HEADER_REGEX);
             if (fileHeaderMatch) {
-              activeLanguage = detectLanguageFromPath(
-                fileHeaderMatch[1].trim(),
-              ).highlight;
+              const operation = getPatchFileOperation(line);
+              currentFileOperation = operation;
+              const filePath = fileHeaderMatch[2].trim();
+              activeLanguage = detectLanguageFromPath(filePath).highlight;
+
+              if (operation === "add") {
+                lineNumberState.oldLineNumber = null;
+                lineNumberState.newLineNumber = 1;
+              } else if (operation === "delete") {
+                lineNumberState.oldLineNumber = 1;
+                lineNumberState.newLineNumber = null;
+              } else {
+                // apply_patch hunks are typically plain "@@" without ranges.
+                // Fall back to patch-local numbering so line numbers are always visible.
+                lineNumberState.oldLineNumber = 1;
+                lineNumberState.newLineNumber = 1;
+              }
             }
 
             const moveToMatch = line.match(PATCH_MOVE_TO_HEADER_REGEX);
@@ -524,6 +612,31 @@ function ApplyPatchInputRenderer(props: {
               activeLanguage = detectLanguageFromPath(
                 moveToMatch[1].trim(),
               ).highlight;
+            }
+
+            const hunkStart = getPatchHunkStartLineNumbers(line);
+            if (hunkStart) {
+              lineNumberState.oldLineNumber = hunkStart.oldLineNumber;
+              lineNumberState.newLineNumber = hunkStart.newLineNumber;
+            } else if (line.startsWith("@@")) {
+              if (currentFileOperation === "add") {
+                lineNumberState.oldLineNumber = null;
+                if (lineNumberState.newLineNumber === null) {
+                  lineNumberState.newLineNumber = 1;
+                }
+              } else if (currentFileOperation === "delete") {
+                if (lineNumberState.oldLineNumber === null) {
+                  lineNumberState.oldLineNumber = 1;
+                }
+                lineNumberState.newLineNumber = null;
+              } else if (currentFileOperation === "update") {
+                if (lineNumberState.oldLineNumber === null) {
+                  lineNumberState.oldLineNumber = 1;
+                }
+                if (lineNumberState.newLineNumber === null) {
+                  lineNumberState.newLineNumber = 1;
+                }
+              }
             }
 
             const codeLine = getPatchLineCode(line);
@@ -539,8 +652,19 @@ function ApplyPatchInputRenderer(props: {
               );
             }
 
+            const lineNumbers = getPatchLineNumbersForCodeLine(
+              codeLine.prefix,
+              lineNumberState,
+            );
+
             return (
               <div key={`${index}:${line}`} className={lineClass}>
+                <span className="inline-block w-[5ch] select-none pr-2 text-right tabular-nums text-zinc-400">
+                  {getPatchLineNumberDisplay(lineNumbers.oldLine)}
+                </span>
+                <span className="inline-block w-[5ch] select-none pr-2 text-right tabular-nums text-zinc-400">
+                  {getPatchLineNumberDisplay(lineNumbers.newLine)}
+                </span>
                 <span
                   className={`inline-block w-[1ch] select-none ${getPatchPrefixClass(
                     codeLine.prefix,

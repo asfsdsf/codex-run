@@ -1,6 +1,7 @@
 import type {
   CodexThreadStateResponse,
   CodexModelOption,
+  CodexSessionContextResponse,
   CreateCodexThreadRequest,
   CreateCodexThreadResponse,
   SendCodexMessageRequest,
@@ -89,5 +90,13 @@ export async function interruptCodexThread(
     {
       method: "POST",
     },
+  );
+}
+
+export async function getSessionContext(
+  sessionId: string,
+): Promise<CodexSessionContextResponse> {
+  return requestJson<CodexSessionContextResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/context`,
   );
 }

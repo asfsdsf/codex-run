@@ -18,6 +18,7 @@ import SessionView from "./components/session-view";
 import { useEventSource } from "./hooks/use-event-source";
 import {
   createCodexThread,
+  getSessionContext,
   getCodexThreadState,
   interruptCodexThread,
   listCodexModels,
@@ -44,6 +45,10 @@ const TURN_STATE_POLL_INTERVAL_MS = 1000;
 const MESSAGE_BOX_MIN_HEIGHT = 42;
 const MESSAGE_BOX_MAX_HEIGHT = 160;
 const MESSAGE_BOX_DEFAULT_HEIGHT = 56;
+const TOKEN_COUNT_FORMATTER = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
 
 interface PendingTurn {
   sessionId: string;
@@ -113,6 +118,12 @@ function App() {
   const [interactionError, setInteractionError] = useState<string | null>(null);
   const [messageBoxHeight, setMessageBoxHeight] = useState(
     MESSAGE_BOX_DEFAULT_HEIGHT,
+  );
+  const [contextLeftPercent, setContextLeftPercent] = useState<number | null>(
+    null,
+  );
+  const [contextUsedTokens, setContextUsedTokens] = useState<number | null>(
+    null,
   );
   const waitSuppressSessionsRef = useRef<Set<string>>(new Set());
   const resizeStateRef = useRef<ResizeState | null>(null);
@@ -237,6 +248,36 @@ function App() {
       setNewSessionCwd(projects[0]);
     }
   }, [selectedProject, projects, newSessionCwd]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      setContextLeftPercent(null);
+      setContextUsedTokens(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    getSessionContext(selectedSession)
+      .then((context) => {
+        if (cancelled) {
+          return;
+        }
+        setContextLeftPercent(context.contextLeftPercent);
+        setContextUsedTokens(context.usedTokens);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setContextLeftPercent(null);
+        setContextUsedTokens(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession, selectedSessionData?.timestamp]);
 
   const handleSessionsFull = useCallback((event: MessageEvent) => {
     const data: Session[] = JSON.parse(event.data);
@@ -565,6 +606,12 @@ function App() {
   const isSendingLocked = isGeneratingForSelectedSession || sendingMessage;
   const newSessionPlaceholder =
     selectedProject || selectedSessionData?.project || "/path/to/project";
+  const contextWindowText =
+    typeof contextLeftPercent === "number"
+      ? `${Math.max(0, Math.min(100, Math.round(contextLeftPercent)))}% context left`
+      : typeof contextUsedTokens === "number"
+        ? `${TOKEN_COUNT_FORMATTER.format(Math.max(0, Math.round(contextUsedTokens)))} used`
+        : "100% context left";
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-100">
@@ -692,6 +739,9 @@ function App() {
                       </option>
                     ))}
                   </select>
+                  <span className="ml-auto text-xs text-zinc-500">
+                    {contextWindowText}
+                  </span>
                 </div>
 
                 <div className="flex items-end gap-2">

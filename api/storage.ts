@@ -71,6 +71,13 @@ export interface CodexThreadStateResponse {
   requestedTurnStatus: CodexTurnStatus | null;
 }
 
+export interface CodexSessionContextResponse {
+  sessionId: string;
+  contextLeftPercent: number | null;
+  usedTokens: number | null;
+  modelContextWindow: number | null;
+}
+
 export interface ConversationMessage {
   type:
     | "user"
@@ -147,6 +154,7 @@ interface PendingToolUse {
 }
 
 const TOOL_RESULT_MAX_LENGTH = 200_000;
+const CONTEXT_WINDOW_BASELINE_TOKENS = 12_000;
 
 let codexDir = join(homedir(), ".codex");
 let codexHistoryPath = join(codexDir, "history.jsonl");
@@ -231,6 +239,31 @@ function safeJsonParse(input: string): unknown {
   } catch {
     return null;
   }
+}
+
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function computeContextLeftPercent(totalTokens: number, contextWindow: number): number {
+  if (contextWindow <= CONTEXT_WINDOW_BASELINE_TOKENS) {
+    return 0;
+  }
+
+  const effectiveWindow = contextWindow - CONTEXT_WINDOW_BASELINE_TOKENS;
+  const used = Math.max(totalTokens - CONTEXT_WINDOW_BASELINE_TOKENS, 0);
+  const remaining = Math.max(effectiveWindow - used, 0);
+  const percent = Math.round((remaining / effectiveWindow) * 100);
+  return Math.max(0, Math.min(100, percent));
 }
 
 async function readFirstLine(filePath: string): Promise<string | null> {
@@ -1111,6 +1144,123 @@ export async function getConversation(
     } catch (err) {
       console.error("Error reading conversation:", err);
       return [];
+    }
+  });
+}
+
+export async function getSessionContext(
+  sessionId: string,
+): Promise<CodexSessionContextResponse> {
+  return dedupe(`getSessionContext:${sessionId}`, async () => {
+    const filePath = await findSessionFile(sessionId);
+    if (!filePath) {
+      return {
+        sessionId,
+        contextLeftPercent: null,
+        usedTokens: null,
+        modelContextWindow: null,
+      };
+    }
+
+    try {
+      const content = await readFile(filePath, "utf-8");
+      const lines = content.split("\n");
+
+      let latestUsedTokens: number | null = null;
+      let latestModelContextWindow: number | null = null;
+
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index];
+        if (!line || !line.trim()) {
+          continue;
+        }
+
+        const parsed = safeJsonParse(line);
+        if (!parsed || typeof parsed !== "object") {
+          continue;
+        }
+
+        const record = parsed as { type?: unknown; payload?: unknown };
+        if (
+          record.type !== "event_msg" ||
+          !record.payload ||
+          typeof record.payload !== "object"
+        ) {
+          continue;
+        }
+
+        const payload = record.payload as Record<string, unknown>;
+        const payloadType = typeof payload.type === "string" ? payload.type : "";
+
+        if (payloadType === "token_count") {
+          const info = payload.info;
+          if (!info || typeof info !== "object") {
+            continue;
+          }
+
+          const infoRecord = info as Record<string, unknown>;
+
+          if (latestUsedTokens === null) {
+            const lastTokenUsage = infoRecord.last_token_usage;
+            if (lastTokenUsage && typeof lastTokenUsage === "object") {
+              latestUsedTokens = parseFiniteNumber(
+                (lastTokenUsage as Record<string, unknown>).total_tokens,
+              );
+            }
+          }
+
+          if (latestUsedTokens === null) {
+            const totalTokenUsage = infoRecord.total_token_usage;
+            if (totalTokenUsage && typeof totalTokenUsage === "object") {
+              latestUsedTokens = parseFiniteNumber(
+                (totalTokenUsage as Record<string, unknown>).total_tokens,
+              );
+            }
+          }
+
+          if (latestModelContextWindow === null) {
+            latestModelContextWindow = parseFiniteNumber(
+              infoRecord.model_context_window,
+            );
+          }
+
+          if (latestUsedTokens !== null && latestModelContextWindow !== null) {
+            break;
+          }
+          continue;
+        }
+
+        if (payloadType === "task_started" && latestModelContextWindow === null) {
+          latestModelContextWindow = parseFiniteNumber(payload.model_context_window);
+          if (latestUsedTokens !== null && latestModelContextWindow !== null) {
+            break;
+          }
+        }
+      }
+
+      const contextLeftPercent =
+        latestModelContextWindow !== null && latestUsedTokens !== null
+          ? computeContextLeftPercent(latestUsedTokens, latestModelContextWindow)
+          : latestModelContextWindow !== null
+            ? 100
+            : null;
+
+      return {
+        sessionId,
+        contextLeftPercent,
+        usedTokens:
+          contextLeftPercent === null && latestUsedTokens !== null
+            ? latestUsedTokens
+            : null,
+        modelContextWindow: latestModelContextWindow,
+      };
+    } catch {
+      return {
+        sessionId,
+        contextLeftPercent: null,
+        usedTokens: null,
+        modelContextWindow: null,
+      };
     }
   });
 }
