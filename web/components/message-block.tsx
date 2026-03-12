@@ -42,7 +42,18 @@ import {
 } from "lucide-react";
 import { sanitizeText } from "../utils";
 import { getFencedCodeBlock, MarkdownRenderer } from "./markdown-renderer";
-import { FunctionToolResultRenderer } from "./tool-renderers";
+import {
+  AskQuestionRenderer,
+  BashRenderer,
+  EditRenderer,
+  FunctionToolResultRenderer,
+  GlobRenderer,
+  GrepRenderer,
+  ReadRenderer,
+  TaskRenderer,
+  TodoRenderer,
+  WriteRenderer,
+} from "./tool-renderers";
 
 interface MessageBlockProps {
   message: ConversationMessage;
@@ -56,6 +67,24 @@ function buildToolMap(content: ContentBlock[]): Map<string, string> {
     }
   }
   return toolMap;
+}
+
+function buildToolInputMap(
+  content: ContentBlock[],
+): Map<string, Record<string, unknown>> {
+  const toolInputMap = new Map<string, Record<string, unknown>>();
+  for (const block of content) {
+    if (
+      block.type === "tool_use" &&
+      block.id &&
+      block.input &&
+      typeof block.input === "object" &&
+      !Array.isArray(block.input)
+    ) {
+      toolInputMap.set(block.id, block.input as Record<string, unknown>);
+    }
+  }
+  return toolInputMap;
 }
 
 function formatReasoningText(text: string): string {
@@ -88,6 +117,8 @@ function JsonRenderer(props: { value: unknown }) {
 
   return <MarkdownRenderer content={getFencedCodeBlock(content, "json")} />;
 }
+
+type JsonViewMode = "formatted" | "raw";
 
 const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
   const { message } = props;
@@ -137,12 +168,20 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
   const toolMap = Array.isArray(content)
     ? buildToolMap(content)
     : new Map<string, string>();
+  const toolInputMap = Array.isArray(content)
+    ? buildToolInputMap(content)
+    : new Map<string, Record<string, unknown>>();
 
   if (!hasText && hasAuxiliary) {
     return (
       <div className="flex flex-col gap-1 py-0.5">
         {auxiliaryBlocks.map((block, index) => (
-          <ContentBlockRenderer key={index} block={block} toolMap={toolMap} />
+          <ContentBlockRenderer
+            key={index}
+            block={block}
+            toolMap={toolMap}
+            toolInputMap={toolInputMap}
+          />
         ))}
       </div>
     );
@@ -171,6 +210,7 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
                   key={index}
                   block={block}
                   toolMap={toolMap}
+                  toolInputMap={toolInputMap}
                 />
               ))}
             </div>
@@ -184,6 +224,7 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
                 key={index}
                 block={block}
                 toolMap={toolMap}
+                toolInputMap={toolInputMap}
               />
             ))}
           </div>
@@ -196,6 +237,7 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
 interface ContentBlockRendererProps {
   block: ContentBlock;
   toolMap?: Map<string, string>;
+  toolInputMap?: Map<string, Record<string, unknown>>;
 }
 
 const TOOL_ICONS: Record<string, typeof Wrench> = {
@@ -510,7 +552,170 @@ function ApplyPatchInputRenderer(props: { raw: string }) {
   );
 }
 
-function renderToolInput(
+type NormalizedTodoItem = {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+};
+
+function normalizeTodoStatus(value: unknown): NormalizedTodoItem["status"] {
+  if (value === "completed" || value === "in_progress" || value === "pending") {
+    return value;
+  }
+  return "pending";
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function asOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function getTodoItemsFromInput(input: Record<string, unknown>): NormalizedTodoItem[] {
+  if (Array.isArray(input.todos)) {
+    return input.todos
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => ({
+        content:
+          typeof item.content === "string" && item.content.trim().length > 0
+            ? item.content
+            : "(empty step)",
+        status: normalizeTodoStatus(item.status),
+      }));
+  }
+
+  if (Array.isArray(input.plan)) {
+    return input.plan
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => ({
+        content:
+          typeof item.step === "string" && item.step.trim().length > 0
+            ? item.step
+            : "(empty step)",
+        status: normalizeTodoStatus(item.status),
+      }));
+  }
+
+  return [];
+}
+
+function toAskQuestionInput(input: Record<string, unknown>): {
+  questions: Array<{
+    header: string;
+    question: string;
+    options: Array<{ label: string; description: string }>;
+    multiSelect: boolean;
+  }>;
+} {
+  if (!Array.isArray(input.questions)) {
+    return { questions: [] };
+  }
+
+  const questions = input.questions
+    .filter((question): question is Record<string, unknown> => isRecord(question))
+    .map((question) => {
+      const options = Array.isArray(question.options)
+        ? question.options
+            .filter((option): option is Record<string, unknown> => isRecord(option))
+            .map((option) => ({
+              label:
+                typeof option.label === "string" && option.label.trim().length > 0
+                  ? option.label
+                  : "Option",
+              description:
+                typeof option.description === "string" ? option.description : "",
+            }))
+        : [];
+
+      return {
+        header:
+          typeof question.header === "string" && question.header.trim().length > 0
+            ? question.header
+            : "Question",
+        question:
+          typeof question.question === "string" && question.question.trim().length > 0
+            ? question.question
+            : "",
+        options,
+        multiSelect: question.multiSelect === true,
+      };
+    })
+    .filter((question) => question.question.length > 0);
+
+  return { questions };
+}
+
+function summarizeValue(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (value === undefined) {
+    return "undefined";
+  }
+  if (typeof value === "string") {
+    if (!value.trim()) {
+      return "(empty)";
+    }
+    return value.length > 140 ? `${value.slice(0, 140)}...` : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `${value.length} item(s)`;
+  }
+  if (isRecord(value)) {
+    return `${Object.keys(value).length} field(s)`;
+  }
+  return String(value);
+}
+
+function GenericToolInputRenderer(props: { input: Record<string, unknown> }) {
+  const entries = Object.entries(props.input);
+
+  if (entries.length === 0) {
+    return (
+      <div className="rounded-lg border border-zinc-700/50 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-500">
+        No input arguments
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-700/50 bg-zinc-900/70">
+      <div className="border-b border-zinc-700/50 bg-zinc-800/30 px-3 py-2 text-xs font-medium text-zinc-300">
+        Parameters
+      </div>
+      <div className="divide-y divide-zinc-800/50">
+        {entries.map(([key, value]) => (
+          <div key={key} className="flex items-start gap-3 px-3 py-2 text-xs">
+            <span className="w-36 shrink-0 font-mono text-zinc-500">{key}</span>
+            <span className="whitespace-pre-wrap break-all text-zinc-300">
+              {summarizeValue(value)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function getRawToolInputValue(
+  block: ContentBlock,
+  input: Record<string, unknown>,
+): unknown {
+  return {
+    type: block.type,
+    id: block.id,
+    name: block.name,
+    input,
+  };
+}
+
+function renderFormattedToolInput(
   block: ContentBlock,
   input: Record<string, unknown>,
 ): JSX.Element {
@@ -521,16 +726,151 @@ function renderToolInput(
     return <ApplyPatchInputRenderer raw={rawInput} />;
   }
 
-  return (
-    <JsonRenderer
-      value={{
-        type: block.type,
-        id: block.id,
-        name: block.name,
-        input,
-      }}
-    />
-  );
+  if (
+    (toolName === "bash" || toolName === "exec_command" || toolName === "write_stdin") &&
+    (typeof input.command === "string" ||
+      typeof input.cmd === "string" ||
+      typeof input.chars === "string")
+  ) {
+    const command =
+      typeof input.command === "string"
+        ? input.command
+        : typeof input.cmd === "string"
+          ? input.cmd
+          : String(input.chars ?? "");
+    if (command.length > 0) {
+      const description =
+        typeof input.description === "string"
+          ? input.description
+          : typeof input.session_id === "number"
+            ? `session ${input.session_id}`
+            : undefined;
+
+      return <BashRenderer input={{ command, description }} />;
+    }
+  }
+
+  if (toolName === "read" && typeof input.file_path === "string") {
+    return (
+      <ReadRenderer
+        input={{
+          file_path: input.file_path,
+          offset: asOptionalNumber(input.offset),
+          limit: asOptionalNumber(input.limit),
+        }}
+      />
+    );
+  }
+
+  if (toolName === "grep" && typeof input.pattern === "string") {
+    return (
+      <GrepRenderer
+        input={{
+          pattern: input.pattern,
+          path: asOptionalString(input.path),
+          glob: asOptionalString(input.glob),
+          type: asOptionalString(input.type),
+        }}
+      />
+    );
+  }
+
+  if (toolName === "glob" && typeof input.pattern === "string") {
+    return (
+      <GlobRenderer
+        input={{
+          pattern: input.pattern,
+          path: asOptionalString(input.path),
+        }}
+      />
+    );
+  }
+
+  if (toolName === "edit" && typeof input.file_path === "string") {
+    return (
+      <EditRenderer
+        input={{
+          file_path: input.file_path,
+          old_string: typeof input.old_string === "string" ? input.old_string : "",
+          new_string: typeof input.new_string === "string" ? input.new_string : "",
+        }}
+      />
+    );
+  }
+
+  if (toolName === "write" && typeof input.file_path === "string") {
+    return (
+      <WriteRenderer
+        input={{
+          file_path: input.file_path,
+          content:
+            typeof input.content === "string"
+              ? input.content
+              : stringifyJson(input.content),
+        }}
+      />
+    );
+  }
+
+  if (toolName === "update_plan" || toolName === "todowrite") {
+    const todos = getTodoItemsFromInput(input);
+    if (todos.length > 0) {
+      return <TodoRenderer todos={todos} />;
+    }
+  }
+
+  if (toolName === "request_user_input" || toolName === "askuserquestion") {
+    const normalizedInput = toAskQuestionInput(input);
+    if (normalizedInput.questions.length > 0) {
+      return <AskQuestionRenderer input={normalizedInput} />;
+    }
+  }
+
+  if (toolName === "task" || toolName === "spawn_agent") {
+    const prompt =
+      typeof input.prompt === "string"
+        ? input.prompt
+        : typeof input.message === "string"
+          ? input.message
+          : "Task request";
+    return (
+      <TaskRenderer
+        input={{
+          description:
+            typeof input.description === "string" ? input.description : "",
+          prompt,
+          subagent_type:
+            typeof input.subagent_type === "string"
+              ? input.subagent_type
+              : typeof input.agent_type === "string"
+                ? input.agent_type
+                : "default",
+          model: asOptionalString(input.model),
+          run_in_background: input.run_in_background === true,
+          resume:
+            typeof input.resume === "string"
+              ? input.resume
+              : typeof input.id === "string"
+                ? input.id
+                : undefined,
+        }}
+      />
+    );
+  }
+
+  return <GenericToolInputRenderer input={input} />;
+}
+
+function renderToolInput(
+  block: ContentBlock,
+  input: Record<string, unknown>,
+  viewMode: JsonViewMode,
+): JSX.Element {
+  if (viewMode === "raw") {
+    return <JsonRenderer value={getRawToolInputValue(block, input)} />;
+  }
+
+  return renderFormattedToolInput(block, input);
 }
 
 const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
@@ -614,12 +954,13 @@ interface ToolResultRendererProps {
   toolName: string;
   content: string;
   isError?: boolean;
+  command?: string;
 }
 
-function tryParseJson(content: string): unknown {
+function parseJsonValue(content: string): { parsed: boolean; value: unknown } {
   const trimmed = content.trim();
   if (!trimmed) {
-    return null;
+    return { parsed: false, value: null };
   }
 
   const startsLikeJson =
@@ -632,14 +973,19 @@ function tryParseJson(content: string): unknown {
     /^-?\d/.test(trimmed);
 
   if (!startsLikeJson) {
-    return null;
+    return { parsed: false, value: null };
   }
 
   try {
-    return JSON.parse(trimmed);
+    return { parsed: true, value: JSON.parse(trimmed) };
   } catch {
-    return null;
+    return { parsed: false, value: null };
   }
+}
+
+function tryParseJson(content: string): unknown {
+  const parsed = parseJsonValue(content);
+  return parsed.parsed ? parsed.value : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -730,9 +1076,67 @@ function ToolResultRenderer(props: ToolResultRendererProps) {
   return <FunctionToolResultRenderer {...props} />;
 }
 
+function getCommandFromToolInput(
+  input: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  if (typeof input.cmd === "string" && input.cmd.trim().length > 0) {
+    return input.cmd;
+  }
+
+  if (typeof input.command === "string" && input.command.trim().length > 0) {
+    return input.command;
+  }
+
+  return undefined;
+}
+
+function getToolResultRawValue(
+  block: ContentBlock,
+  toolName: string,
+): unknown | null {
+  if (typeof block.content === "string") {
+    const parsed = parseJsonValue(block.content);
+    if (!parsed.parsed) {
+      return null;
+    }
+
+    return {
+      type: "tool_result",
+      tool_use_id: block.tool_use_id,
+      name: toolName || block.name,
+      is_error: block.is_error,
+      content: parsed.value,
+    };
+  }
+
+  if (
+    block.content !== undefined &&
+    (typeof block.content === "object" ||
+      typeof block.content === "number" ||
+      typeof block.content === "boolean")
+  ) {
+    return {
+      type: "tool_result",
+      tool_use_id: block.tool_use_id,
+      name: toolName || block.name,
+      is_error: block.is_error,
+      content: block.content,
+    };
+  }
+
+  return null;
+}
+
 function ContentBlockRenderer(props: ContentBlockRendererProps) {
-  const { block, toolMap } = props;
-  const [expanded, setExpanded] = useState(false);
+  const { block, toolMap, toolInputMap } = props;
+  const [expanded, setExpanded] = useState(
+    block.type === "tool_use" || block.type === "tool_result",
+  );
+  const [jsonViewMode, setJsonViewMode] = useState<JsonViewMode>("formatted");
 
   if (block.type === "text" && block.text) {
     const sanitized = sanitizeText(block.text);
@@ -846,30 +1250,54 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
       toolName === "askuserquestion" ||
       toolName === "task";
     const isExpanded = expanded || shouldAutoExpand;
+    const supportsRawToggle = hasInput;
 
     return (
       <div className={isExpanded ? "w-full" : ""}>
-        <button
-          onClick={() =>
-            hasInput && !shouldAutoExpand && setExpanded(!expanded)
-          }
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-500/10 hover:bg-slate-500/15 text-[11px] text-slate-300 transition-colors border border-slate-500/20"
-        >
-          <Icon size={12} className="opacity-60" />
-          <span className="font-medium text-slate-200">{block.name}</span>
-          {preview && (
-            <span className="text-slate-500 font-normal truncate max-w-[200px]">
-              {preview}
-            </span>
+        <div className="inline-flex items-center gap-1.5">
+          <button
+            onClick={() =>
+              hasInput && !shouldAutoExpand && setExpanded(!expanded)
+            }
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-500/10 hover:bg-slate-500/15 text-[11px] text-slate-300 transition-colors border border-slate-500/20"
+          >
+            <Icon size={12} className="opacity-60" />
+            <span className="font-medium text-slate-200">{block.name}</span>
+            {preview && (
+              <span className="text-slate-500 font-normal truncate max-w-[200px]">
+                {preview}
+              </span>
+            )}
+            {hasInput && !shouldAutoExpand && (
+              <span className="text-[10px] opacity-40 ml-0.5">
+                {expanded ? "▼" : "▶"}
+              </span>
+            )}
+          </button>
+          {supportsRawToggle && isExpanded && (
+            <button
+              onClick={() =>
+                setJsonViewMode((current) =>
+                  current === "formatted" ? "raw" : "formatted",
+                )
+              }
+              className={`rounded-lg border px-2 py-1 text-[11px] font-mono transition-colors ${
+                jsonViewMode === "raw"
+                  ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                  : "border-slate-500/20 bg-slate-500/10 text-slate-300 hover:bg-slate-500/15"
+              }`}
+              title={
+                jsonViewMode === "raw"
+                  ? "Show formatted view"
+                  : "Show raw JSON"
+              }
+            >
+              {"</>"}
+            </button>
           )}
-          {hasInput && !shouldAutoExpand && (
-            <span className="text-[10px] opacity-40 ml-0.5">
-              {expanded ? "▼" : "▶"}
-            </span>
-          )}
-        </button>
+        </div>
         {isExpanded && hasInput && (
-          <div className="mt-2">{renderToolInput(block, input)}</div>
+          <div className="mt-2">{renderToolInput(block, input, jsonViewMode)}</div>
         )}
       </div>
     );
@@ -889,6 +1317,11 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
       (block.tool_use_id && toolMap
         ? toolMap.get(block.tool_use_id) || ""
         : "");
+    const toolInput =
+      block.tool_use_id && toolInputMap
+        ? toolInputMap.get(block.tool_use_id)
+        : undefined;
+    const command = getCommandFromToolInput(toolInput);
 
     const contentPreview =
       hasContent && !expanded
@@ -896,43 +1329,75 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
           resultContent.slice(0, previewLength) +
             (resultContent.length > previewLength ? "..." : "")
         : null;
+    const rawJsonValue = getToolResultRawValue(block, toolName);
+    const supportsRawToggle = rawJsonValue !== null;
 
     return (
       <div className={expanded ? "w-full" : ""}>
-        <button
-          onClick={() => hasContent && setExpanded(!expanded)}
-          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] transition-colors border ${
-            isError
-              ? "bg-rose-500/10 hover:bg-rose-500/15 text-rose-400/90 border-rose-500/20"
-              : "bg-teal-500/10 hover:bg-teal-500/15 text-teal-400/90 border-teal-500/20"
-          }`}
-        >
-          {isError ? (
-            <X size={12} className="opacity-70" />
-          ) : (
-            <Check size={12} className="opacity-70" />
-          )}
-          <span className="font-medium">{isError ? "error" : "result"}</span>
-          {contentPreview && !expanded && (
-            <span
-              className={`font-normal truncate max-w-[200px] ${isError ? "text-rose-500/70" : "text-teal-500/70"}`}
+        <div className="inline-flex items-center gap-1.5">
+          <button
+            onClick={() => hasContent && setExpanded(!expanded)}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] transition-colors border ${
+              isError
+                ? "bg-rose-500/10 hover:bg-rose-500/15 text-rose-400/90 border-rose-500/20"
+                : "bg-teal-500/10 hover:bg-teal-500/15 text-teal-400/90 border-teal-500/20"
+            }`}
+          >
+            {isError ? (
+              <X size={12} className="opacity-70" />
+            ) : (
+              <Check size={12} className="opacity-70" />
+            )}
+            <span className="font-medium">{isError ? "error" : "result"}</span>
+            {contentPreview && !expanded && (
+              <span
+                className={`font-normal truncate max-w-[200px] ${isError ? "text-rose-500/70" : "text-teal-500/70"}`}
+              >
+                {contentPreview}
+              </span>
+            )}
+            {hasContent && (
+              <span className="text-[10px] opacity-40 ml-0.5">
+                {expanded ? "▼" : "▶"}
+              </span>
+            )}
+          </button>
+          {supportsRawToggle && expanded && (
+            <button
+              onClick={() =>
+                setJsonViewMode((current) =>
+                  current === "formatted" ? "raw" : "formatted",
+                )
+              }
+              className={`rounded-lg border px-2 py-1 text-[11px] font-mono transition-colors ${
+                jsonViewMode === "raw"
+                  ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                  : "border-teal-500/20 bg-teal-500/10 text-teal-200 hover:bg-teal-500/15"
+              }`}
+              title={
+                jsonViewMode === "raw"
+                  ? "Show formatted view"
+                  : "Show raw JSON"
+              }
             >
-              {contentPreview}
-            </span>
+              {"</>"}
+            </button>
           )}
-          {hasContent && (
-            <span className="text-[10px] opacity-40 ml-0.5">
-              {expanded ? "▼" : "▶"}
-            </span>
-          )}
-        </button>
-        {expanded && hasContent && (
-          <ToolResultRenderer
-            toolName={toolName}
-            content={resultContent}
-            isError={isError}
-          />
-        )}
+        </div>
+        {expanded &&
+          hasContent &&
+          (supportsRawToggle && jsonViewMode === "raw" ? (
+            <div className="mt-2">
+              <JsonRenderer value={rawJsonValue} />
+            </div>
+          ) : (
+            <ToolResultRenderer
+              toolName={toolName}
+              content={resultContent}
+              isError={isError}
+              command={command}
+            />
+          ))}
       </div>
     );
   }

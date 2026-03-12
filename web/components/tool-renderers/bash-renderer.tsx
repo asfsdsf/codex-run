@@ -1,5 +1,8 @@
 import { Terminal, Play, AlertTriangle, CheckCircle2, Copy, Check } from "lucide-react";
 import { useState } from "react";
+import hljs from "highlight.js/lib/core";
+import bashLanguage from "highlight.js/lib/languages/bash";
+import { AnsiText } from "./ansi-text";
 
 interface BashInput {
   command: string;
@@ -16,6 +19,37 @@ interface BashResultRendererProps {
   isError?: boolean;
 }
 
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => HTML_ESCAPE_MAP[char] ?? char);
+}
+
+if (!hljs.getLanguage("bash")) {
+  hljs.registerLanguage("bash", bashLanguage);
+}
+
+function highlightShellCommand(command: string): string {
+  if (!command) {
+    return "";
+  }
+
+  try {
+    return hljs.highlight(command, {
+      language: "bash",
+      ignoreIllegals: true,
+    }).value;
+  } catch {
+    return escapeHtml(command);
+  }
+}
+
 export function BashRenderer(props: BashRendererProps) {
   const { input } = props;
   const [copied, setCopied] = useState(false);
@@ -26,6 +60,7 @@ export function BashRenderer(props: BashRendererProps) {
 
   const command = input.command;
   const description = input.description;
+  const highlightedCommand = highlightShellCommand(command);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(command);
@@ -57,7 +92,10 @@ export function BashRenderer(props: BashRendererProps) {
         <div className="p-3 overflow-x-auto">
           <div className="flex items-start gap-2">
             <pre className="text-xs font-mono m-0 p-0 bg-transparent! text-zinc-200 whitespace-pre-wrap break-all">
-              {command}
+              <code
+                className="patch-syntax block"
+                dangerouslySetInnerHTML={{ __html: highlightedCommand }}
+              />
             </pre>
           </div>
         </div>
@@ -84,6 +122,7 @@ export function BashResultRenderer(props: BashResultRendererProps) {
   const maxLines = 30;
   const truncated = lines.length > maxLines;
   const displayLines = truncated ? lines.slice(0, maxLines) : lines;
+  const displayContent = displayLines.join("\n");
 
   return (
     <div className="w-full mt-2">
@@ -118,11 +157,11 @@ export function BashResultRenderer(props: BashResultRendererProps) {
               isError ? "text-rose-200/80" : "text-zinc-300"
             }`}
           >
-            {displayLines.join("\n")}
+            <AnsiText text={displayContent} />
             {truncated && (
-              <div className="text-zinc-500 mt-2 pt-2 border-t border-zinc-700/50">
+              <span className="block text-zinc-500 mt-2 pt-2 border-t border-zinc-700/50">
                 ... {lines.length - maxLines} more lines
-              </div>
+              </span>
             )}
           </pre>
         </div>
