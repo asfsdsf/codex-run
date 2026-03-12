@@ -586,13 +586,6 @@ function App() {
               </div>
 
               <div className="border-t border-zinc-800/60 bg-zinc-950 p-3 space-y-2">
-                {isGeneratingForSelectedSession && (
-                  <div className="flex items-center gap-2 text-sm text-zinc-300">
-                    <span className="thinking-dot" />
-                    <span className="thinking-label">Thinking...</span>
-                  </div>
-                )}
-
                 <div className="flex flex-wrap items-center gap-2">
                   <select
                     value={selectedModelId || DEFAULT_OPTION_VALUE}
@@ -634,25 +627,35 @@ function App() {
                 </div>
 
                 <div className="flex items-end gap-2">
-                  <textarea
-                    value={messageDraft}
-                    onChange={(event) => setMessageDraft(event.target.value)}
-                    disabled={isSendingLocked}
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "Enter" &&
-                        !event.shiftKey &&
-                        !event.nativeEvent.isComposing &&
-                        !isGeneratingForSelectedSession
-                      ) {
-                        event.preventDefault();
-                        void handleSendMessage();
+                  <div className="relative flex-1">
+                    {isGeneratingForSelectedSession && !messageDraft.trim() && (
+                      <div className="pointer-events-none absolute inset-0 flex items-start gap-2 px-3 py-2 text-sm text-zinc-300">
+                        <span className="thinking-dot mt-[0.35rem]" />
+                        <span className="thinking-label">Working...</span>
+                      </div>
+                    )}
+                    <textarea
+                      value={messageDraft}
+                      onChange={(event) => setMessageDraft(event.target.value)}
+                      disabled={isSendingLocked}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "Enter" &&
+                          !event.shiftKey &&
+                          !event.nativeEvent.isComposing &&
+                          !isGeneratingForSelectedSession
+                        ) {
+                          event.preventDefault();
+                          void handleSendMessage();
+                        }
+                      }}
+                      placeholder={
+                        isGeneratingForSelectedSession ? "" : "Message Codex..."
                       }
-                    }}
-                    placeholder="Message Codex..."
-                    rows={2}
-                    className="flex-1 min-h-[42px] max-h-40 resize-y bg-zinc-900/70 text-sm text-zinc-200 rounded border border-zinc-800 px-3 py-2 focus:outline-none"
-                  />
+                      rows={2}
+                      className="w-full min-h-[42px] max-h-40 resize-y bg-zinc-900/70 text-sm text-zinc-200 rounded border border-zinc-800 px-3 py-2 focus:outline-none"
+                    />
+                  </div>
                   <button
                     onClick={() => {
                       if (isGeneratingForSelectedSession) {
