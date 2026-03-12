@@ -15,10 +15,14 @@ interface WriteInput {
 
 interface EditRendererProps {
   input: EditInput;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 interface WriteRendererProps {
   input: WriteInput;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 function getFileName(filePath: string) {
@@ -46,7 +50,7 @@ function parseDiff(diffText: string) {
 }
 
 export function EditRenderer(props: EditRendererProps) {
-  const { input } = props;
+  const { input, embedded = false, hideHeader = false } = props;
 
   if (!input || !input.file_path) {
     return null;
@@ -65,27 +69,31 @@ export function EditRenderer(props: EditRendererProps) {
   const removedLines = parsedLines.filter((l) => l.type === "remove").length;
 
   return (
-    <div className="w-full mt-2">
-      <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-          <FileEdit size={14} className="text-blue-400" />
-          <span className="text-xs font-mono text-zinc-300">{fileName}</span>
-          <div className="flex items-center gap-2 ml-auto text-xs">
-            {addedLines > 0 && (
-              <span className="flex items-center gap-0.5 text-emerald-400">
-                <Plus size={12} />
-                {addedLines}
-              </span>
-            )}
-            {removedLines > 0 && (
-              <span className="flex items-center gap-0.5 text-rose-400">
-                <Minus size={12} />
-                {removedLines}
-              </span>
-            )}
-            <CopyButton text={input.file_path} />
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
+      <div
+        className={`${embedded ? "bg-transparent border-0 rounded-none" : "bg-zinc-900/70 border border-zinc-700/50 rounded-lg"} overflow-hidden`}
+      >
+        {!hideHeader && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+            <FileEdit size={14} className="text-blue-400" />
+            <span className="text-xs font-mono text-zinc-300">{fileName}</span>
+            <div className="flex items-center gap-2 ml-auto text-xs">
+              {addedLines > 0 && (
+                <span className="flex items-center gap-0.5 text-emerald-400">
+                  <Plus size={12} />
+                  {addedLines}
+                </span>
+              )}
+              {removedLines > 0 && (
+                <span className="flex items-center gap-0.5 text-rose-400">
+                  <Minus size={12} />
+                  {removedLines}
+                </span>
+              )}
+              <CopyButton text={input.file_path} />
+            </div>
           </div>
-        </div>
+        )}
         <div className="overflow-x-auto max-h-80 overflow-y-auto">
           <pre className="text-xs font-mono p-0">
             {parsedLines.map((line, index) => {
@@ -136,7 +144,7 @@ export function EditRenderer(props: EditRendererProps) {
 }
 
 export function WriteRenderer(props: WriteRendererProps) {
-  const { input } = props;
+  const { input, embedded = false, hideHeader = false } = props;
 
   if (!input || !input.file_path) {
     return null;
@@ -149,16 +157,20 @@ export function WriteRenderer(props: WriteRendererProps) {
   const isTruncated = content.length > 500;
 
   return (
-    <div className="w-full mt-2">
-      <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-          <FilePlus2 size={14} className="text-emerald-400" />
-          <span className="text-xs font-mono text-zinc-300">{fileName}</span>
-          <div className="flex items-center gap-1 ml-auto">
-            <span className="text-xs text-zinc-500">{lineCount} lines</span>
-            <CopyButton text={input.file_path} />
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
+      <div
+        className={`${embedded ? "bg-transparent border-0 rounded-none" : "bg-zinc-900/70 border border-zinc-700/50 rounded-lg"} overflow-hidden`}
+      >
+        {!hideHeader && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+            <FilePlus2 size={14} className="text-emerald-400" />
+            <span className="text-xs font-mono text-zinc-300">{fileName}</span>
+            <div className="flex items-center gap-1 ml-auto">
+              <span className="text-xs text-zinc-500">{lineCount} lines</span>
+              <CopyButton text={input.file_path} />
+            </div>
           </div>
-        </div>
+        )}
         <div className="overflow-x-auto max-h-60 overflow-y-auto">
           <pre className="text-xs font-mono p-3 text-zinc-300">
             {preview}

@@ -7,6 +7,8 @@ interface TodoItem {
 
 interface TodoRendererProps {
   todos: TodoItem[];
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 function getStatusIcon(status: string) {
@@ -30,7 +32,7 @@ function getStatusClass(status: string) {
 }
 
 export function TodoRenderer(props: TodoRendererProps) {
-  const { todos } = props;
+  const { todos, embedded = false, hideHeader = false } = props;
 
   if (!todos || todos.length === 0) {
     return null;
@@ -40,21 +42,25 @@ export function TodoRenderer(props: TodoRendererProps) {
   const totalCount = todos.length;
 
   return (
-    <div className="w-full mt-2">
-      <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-          <ListTodo size={14} className="text-violet-400" />
-          <span className="text-xs font-medium text-zinc-300">Tasks</span>
-          <span className="text-xs text-zinc-500 ml-auto">
-            {completedCount}/{totalCount}
-          </span>
-          <div className="w-16 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-violet-500 transition-all duration-300"
-              style={{ width: `${(completedCount / totalCount) * 100}%` }}
-            />
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
+      <div
+        className={`${embedded ? "bg-transparent border-0 rounded-none" : "bg-zinc-900/70 border border-zinc-700/50 rounded-lg"} overflow-hidden`}
+      >
+        {!hideHeader && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+            <ListTodo size={14} className="text-violet-400" />
+            <span className="text-xs font-medium text-zinc-300">Tasks</span>
+            <span className="text-xs text-zinc-500 ml-auto">
+              {completedCount}/{totalCount}
+            </span>
+            <div className="w-16 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-violet-500 transition-all duration-300"
+                style={{ width: `${(completedCount / totalCount) * 100}%` }}
+              />
+            </div>
           </div>
-        </div>
+        )}
         <ul className="divide-y divide-zinc-800/50">
           {todos.map((todo, index) => (
             <li

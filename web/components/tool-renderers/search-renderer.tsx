@@ -15,31 +15,40 @@ interface GlobInput {
 
 interface GrepRendererProps {
   input: GrepInput;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 interface GlobRendererProps {
   input: GlobInput;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 interface SearchResultRendererProps {
   content: string;
   isFileList?: boolean;
+  embedded?: boolean;
 }
 
 export function GrepRenderer(props: GrepRendererProps) {
-  const { input } = props;
+  const { input, embedded = false, hideHeader = false } = props;
 
   if (!input || !input.pattern) {
     return null;
   }
 
   return (
-    <div className="w-full mt-2">
-      <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-          <Search size={14} className="text-amber-400" />
-          <span className="text-xs font-medium text-zinc-300">Search</span>
-        </div>
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
+      <div
+        className={`${embedded ? "bg-transparent border-0 rounded-none" : "bg-zinc-900/70 border border-zinc-700/50 rounded-lg"} overflow-hidden`}
+      >
+        {!hideHeader && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+            <Search size={14} className="text-amber-400" />
+            <span className="text-xs font-medium text-zinc-300">Search</span>
+          </div>
+        )}
         <div className="p-3 space-y-2">
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-500">Pattern:</span>
@@ -72,19 +81,23 @@ export function GrepRenderer(props: GrepRendererProps) {
 }
 
 export function GlobRenderer(props: GlobRendererProps) {
-  const { input } = props;
+  const { input, embedded = false, hideHeader = false } = props;
 
   if (!input || !input.pattern) {
     return null;
   }
 
   return (
-    <div className="w-full mt-2">
-      <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-          <FolderOpen size={14} className="text-cyan-400" />
-          <span className="text-xs font-medium text-zinc-300">Find Files</span>
-        </div>
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
+      <div
+        className={`${embedded ? "bg-transparent border-0 rounded-none" : "bg-zinc-900/70 border border-zinc-700/50 rounded-lg"} overflow-hidden`}
+      >
+        {!hideHeader && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+            <FolderOpen size={14} className="text-cyan-400" />
+            <span className="text-xs font-medium text-zinc-300">Find Files</span>
+          </div>
+        )}
         <div className="p-3 space-y-2">
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-500">Pattern:</span>
@@ -105,11 +118,11 @@ export function GlobRenderer(props: GlobRendererProps) {
 }
 
 export function SearchResultRenderer(props: SearchResultRendererProps) {
-  const { content, isFileList } = props;
+  const { content, isFileList, embedded = false } = props;
 
   if (!content || content.trim().length === 0) {
     return (
-      <div className="w-full mt-2">
+      <div className={`w-full ${embedded ? "" : "mt-2"}`}>
         <div className="flex items-center gap-2 px-3 py-2 bg-zinc-800/30 border border-zinc-700/50 rounded-lg">
           <Search size={14} className="text-zinc-500" />
           <span className="text-xs text-zinc-400">No matches found</span>
@@ -125,7 +138,7 @@ export function SearchResultRenderer(props: SearchResultRendererProps) {
 
   if (isFileList) {
     return (
-      <div className="w-full mt-2">
+      <div className={`w-full ${embedded ? "" : "mt-2"}`}>
         <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
             <FolderOpen size={14} className="text-cyan-400" />
@@ -156,7 +169,7 @@ export function SearchResultRenderer(props: SearchResultRendererProps) {
   }
 
   return (
-    <div className="w-full mt-2">
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
       <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
           <Search size={14} className="text-amber-400" />

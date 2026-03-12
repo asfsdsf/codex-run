@@ -28,6 +28,8 @@ interface FunctionToolResultRendererProps {
   content: string;
   isError?: boolean;
   command?: string;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 interface ExecResultMeta {
@@ -759,8 +761,10 @@ function ExecResultRenderer(props: {
   content: string;
   isError?: boolean;
   command?: string;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }) {
-  const { content, isError, command } = props;
+  const { content, isError, command, embedded = false, hideHeader = false } = props;
   const parsed = parseExecOutput(content);
   const body = parsed.body || "";
   const isFailure =
@@ -768,46 +772,52 @@ function ExecResultRenderer(props: {
   const renderMode = detectCommandRenderMode(command);
 
   return (
-    <div className="w-full mt-2">
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
       <div
-        className={`overflow-hidden rounded-lg border ${
-          isFailure
-            ? "border-rose-900/40 bg-rose-950/20"
-            : "border-zinc-700/50 bg-zinc-900/70"
+        className={`overflow-hidden ${
+          embedded
+            ? "rounded-none border-0 bg-transparent"
+            : `rounded-lg border ${
+                isFailure
+                  ? "border-rose-900/40 bg-rose-950/20"
+                  : "border-zinc-700/50 bg-zinc-900/70"
+              }`
         }`}
       >
-        <div
-          className={`flex flex-wrap items-center gap-2 border-b px-3 py-2 ${
-            isFailure
-              ? "border-rose-900/30 bg-rose-900/20"
-              : "border-zinc-700/50 bg-zinc-800/30"
-          }`}
-        >
-          <Terminal
-            size={14}
-            className={isFailure ? "text-rose-300" : "text-green-400"}
-          />
-          <span className="text-xs font-medium text-zinc-200">
-            Terminal output
-          </span>
-          {parsed.exitCode !== undefined && (
-            <MetadataBadge
-              label="exit"
-              value={String(parsed.exitCode)}
-              tone={parsed.exitCode === 0 ? "success" : "error"}
+        {!hideHeader && (
+          <div
+            className={`flex flex-wrap items-center gap-2 border-b px-3 py-2 ${
+              isFailure
+                ? "border-rose-900/30 bg-rose-900/20"
+                : "border-zinc-700/50 bg-zinc-800/30"
+            }`}
+          >
+            <Terminal
+              size={14}
+              className={isFailure ? "text-rose-300" : "text-green-400"}
             />
-          )}
-          {parsed.wallTime && (
-            <MetadataBadge label="time" value={parsed.wallTime} />
-          )}
-          {parsed.originalTokenCount && (
-            <MetadataBadge label="tokens" value={parsed.originalTokenCount} />
-          )}
-          {parsed.totalOutputLines && (
-            <MetadataBadge label="lines" value={parsed.totalOutputLines} />
-          )}
-          {body && <CopyButton text={body} className="ml-auto" />}
-        </div>
+            <span className="text-xs font-medium text-zinc-200">
+              Terminal output
+            </span>
+            {parsed.exitCode !== undefined && (
+              <MetadataBadge
+                label="exit"
+                value={String(parsed.exitCode)}
+                tone={parsed.exitCode === 0 ? "success" : "error"}
+              />
+            )}
+            {parsed.wallTime && (
+              <MetadataBadge label="time" value={parsed.wallTime} />
+            )}
+            {parsed.originalTokenCount && (
+              <MetadataBadge label="tokens" value={parsed.originalTokenCount} />
+            )}
+            {parsed.totalOutputLines && (
+              <MetadataBadge label="lines" value={parsed.totalOutputLines} />
+            )}
+            {body && <CopyButton text={body} className="ml-auto" />}
+          </div>
+        )}
         {body ? (
           renderMode.mode === "git_diff" ? (
             <GitDiffOutputRenderer body={body} />
@@ -837,11 +847,14 @@ function ExecResultRenderer(props: {
   );
 }
 
-function RichContentRenderer(props: { parts: RichContentPart[] }) {
-  const { parts } = props;
+function RichContentRenderer(props: {
+  parts: RichContentPart[];
+  embedded?: boolean;
+}) {
+  const { parts, embedded = false } = props;
 
   return (
-    <div className="w-full mt-2 space-y-3">
+    <div className={`w-full ${embedded ? "" : "mt-2"} space-y-3`}>
       {parts.map((part, index) => {
         if (
           (part.type === "input_text" || part.type === "output_text") &&
@@ -888,11 +901,12 @@ function StatusResultRenderer(props: {
   label: string;
   detail?: string;
   isError?: boolean;
+  embedded?: boolean;
 }) {
-  const { label, detail, isError } = props;
+  const { label, detail, isError, embedded = false } = props;
 
   return (
-    <div className="w-full mt-2">
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
       <div
         className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${
           isError
@@ -911,8 +925,9 @@ function StatusResultRenderer(props: {
 function ApplyPatchResultRenderer(props: {
   value: Record<string, unknown>;
   isError?: boolean;
+  embedded?: boolean;
 }) {
-  const { value, isError } = props;
+  const { value, isError, embedded = false } = props;
   const output = typeof value.output === "string" ? value.output.trim() : "";
   const metadata = isRecord(value.metadata) ? value.metadata : null;
   const lines = output ? output.split("\n").filter(Boolean) : [];
@@ -922,12 +937,16 @@ function ApplyPatchResultRenderer(props: {
     .filter((line) => /^([A-Z?]{1,2})\s+/.test(line));
 
   return (
-    <div className="w-full mt-2">
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
       <div
-        className={`overflow-hidden rounded-lg border ${
-          isError
-            ? "border-rose-900/40 bg-rose-950/20"
-            : "border-emerald-900/40 bg-emerald-950/20"
+        className={`overflow-hidden ${
+          embedded
+            ? "rounded-none border-0 bg-transparent"
+            : `rounded-lg border ${
+                isError
+                  ? "border-rose-900/40 bg-rose-950/20"
+                  : "border-emerald-900/40 bg-emerald-950/20"
+              }`
         }`}
       >
         <div
@@ -989,7 +1008,7 @@ function ApplyPatchResultRenderer(props: {
 }
 
 function PlainTextResultRenderer(props: FunctionToolResultRendererProps) {
-  const { content, isError } = props;
+  const { content, isError, embedded = false } = props;
 
   if (!content || content.trim().length === 0) {
     return (
@@ -1003,7 +1022,7 @@ function PlainTextResultRenderer(props: FunctionToolResultRendererProps) {
 
   return (
     <pre
-      className={`mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-lg border p-3 text-xs ${
+      className={`${embedded ? "" : "mt-2"} max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-lg border p-3 text-xs ${
         isError
           ? "border-rose-900/30 bg-rose-950/30 text-rose-200/80"
           : "border-teal-900/30 bg-teal-950/30 text-teal-200/80"
@@ -1022,24 +1041,31 @@ function PlainTextResultRenderer(props: FunctionToolResultRendererProps) {
 export function FunctionToolResultRenderer(
   props: FunctionToolResultRendererProps,
 ) {
-  const { toolName, content, isError, command } = props;
+  const {
+    toolName,
+    content,
+    isError,
+    command,
+    embedded = false,
+    hideHeader = false,
+  } = props;
   const name = toolName.toLowerCase();
   const parsed = tryParseJson(content);
 
   if (name === "bash") {
-    return <BashResultRenderer content={content} isError={isError} />;
+    return <BashResultRenderer content={content} isError={isError} embedded={embedded} />;
   }
 
   if (name === "glob") {
-    return <SearchResultRenderer content={content} isFileList />;
+    return <SearchResultRenderer content={content} isFileList embedded={embedded} />;
   }
 
   if (name === "grep") {
-    return <SearchResultRenderer content={content} />;
+    return <SearchResultRenderer content={content} embedded={embedded} />;
   }
 
   if (name === "read") {
-    return <FileContentRenderer content={content} />;
+    return <FileContentRenderer content={content} embedded={embedded} />;
   }
 
   if (name === "exec_command" || name === "write_stdin") {
@@ -1048,17 +1074,19 @@ export function FunctionToolResultRenderer(
         content={content}
         isError={isError}
         command={command}
+        embedded={embedded}
+        hideHeader={hideHeader}
       />
     );
   }
 
   if (name === "apply_patch" && isRecord(parsed)) {
-    return <ApplyPatchResultRenderer value={parsed} isError={isError} />;
+    return <ApplyPatchResultRenderer value={parsed} isError={isError} embedded={embedded} />;
   }
 
   if (name === "js_repl" || name === "view_image") {
     if (Array.isArray(parsed)) {
-      return <RichContentRenderer parts={parsed as RichContentPart[]} />;
+      return <RichContentRenderer parts={parsed as RichContentPart[]} embedded={embedded} />;
     }
     return <PlainTextResultRenderer {...props} />;
   }
@@ -1068,6 +1096,7 @@ export function FunctionToolResultRenderer(
       <StatusResultRenderer
         label={content.trim() || "Plan updated"}
         isError={isError}
+        embedded={embedded}
       />
     );
   }
@@ -1077,6 +1106,7 @@ export function FunctionToolResultRenderer(
       <StatusResultRenderer
         label={content.trim() || "Kernel reset"}
         isError={isError}
+        embedded={embedded}
       />
     );
   }
@@ -1087,6 +1117,7 @@ export function FunctionToolResultRenderer(
         label="Web search"
         detail={content.trim() || undefined}
         isError={isError}
+        embedded={embedded}
       />
     );
   }
@@ -1097,7 +1128,7 @@ export function FunctionToolResultRenderer(
     ["spawn_agent", "request_user_input", "wait", "close_agent"].includes(name)
   ) {
     return (
-      <div className="mt-2 rounded-lg border border-zinc-700/50 bg-zinc-900/70 px-3 py-2.5">
+      <div className={`${embedded ? "" : "mt-2"} rounded-lg border border-zinc-700/50 bg-zinc-900/70 px-3 py-2.5`}>
         <MarkdownRenderer content={toMarkdownList(parsed)} />
       </div>
     );

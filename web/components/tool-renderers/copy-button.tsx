@@ -4,10 +4,11 @@ import { Copy, Check } from "lucide-react";
 interface CopyButtonProps {
   text: string;
   className?: string;
+  title?: string;
 }
 
 export function CopyButton(props: CopyButtonProps) {
-  const { text, className = "" } = props;
+  const { text, className = "", title = "Copy" } = props;
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async (e: React.MouseEvent) => {
@@ -33,7 +34,7 @@ export function CopyButton(props: CopyButtonProps) {
     <button
       onClick={handleCopy}
       className={`p-1 rounded hover:bg-zinc-700/50 transition-colors ${className}`}
-      title={copied ? "Copied!" : "Copy path"}
+      title={copied ? "Copied!" : title}
     >
       {copied ? (
         <Check size={12} className="text-emerald-400" />

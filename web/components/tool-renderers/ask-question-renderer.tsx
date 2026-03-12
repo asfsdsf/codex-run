@@ -18,33 +18,37 @@ interface AskQuestionInput {
 
 interface AskQuestionRendererProps {
   input: AskQuestionInput;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 export function AskQuestionRenderer(props: AskQuestionRendererProps) {
-  const { input } = props;
+  const { input, embedded = false, hideHeader = false } = props;
 
   if (!input || !input.questions || input.questions.length === 0) {
     return null;
   }
 
   return (
-    <div className="w-full mt-2 space-y-3">
+    <div className={`w-full ${embedded ? "" : "mt-2"} space-y-3`}>
       {input.questions.map((question, qIndex) => (
         <div
           key={qIndex}
           className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden"
         >
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-            <HelpCircle size={14} className="text-violet-400" />
-            <span className="text-xs font-medium text-zinc-300">
-              {question.header || "Question"}
-            </span>
-            {question.multiSelect && (
-              <span className="text-[10px] text-zinc-500 bg-zinc-700/50 px-1.5 py-0.5 rounded ml-auto">
-                Multi-select
+          {!hideHeader && (
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+              <HelpCircle size={14} className="text-violet-400" />
+              <span className="text-xs font-medium text-zinc-300">
+                {question.header || "Question"}
               </span>
-            )}
-          </div>
+              {question.multiSelect && (
+                <span className="text-[10px] text-zinc-500 bg-zinc-700/50 px-1.5 py-0.5 rounded ml-auto">
+                  Multi-select
+                </span>
+              )}
+            </div>
+          )}
           <div className="p-3 space-y-3">
             <p className="text-sm text-zinc-200">{question.question}</p>
             {question.options && question.options.length > 0 && (

@@ -9,11 +9,14 @@ interface ReadInput {
 
 interface ReadRendererProps {
   input: ReadInput;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 interface FileContentRendererProps {
   content: string;
   fileName?: string;
+  embedded?: boolean;
 }
 
 function getFileName(filePath: string) {
@@ -54,7 +57,7 @@ function getLanguageFromExt(ext: string) {
 }
 
 export function ReadRenderer(props: ReadRendererProps) {
-  const { input } = props;
+  const { input, embedded = false, hideHeader = false } = props;
 
   if (!input || !input.file_path) {
     return null;
@@ -65,34 +68,51 @@ export function ReadRenderer(props: ReadRendererProps) {
   const language = ext ? getLanguageFromExt(ext) : null;
 
   return (
-    <div className="w-full mt-2">
-      <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-          <FileCode size={14} className="text-sky-400" />
-          <span className="text-xs font-mono text-zinc-300">{fileName}</span>
-          {language && (
-            <span className="text-xs text-zinc-500 bg-zinc-700/50 px-1.5 py-0.5 rounded">
-              {language}
-            </span>
-          )}
-          <div className="flex items-center gap-1 ml-auto">
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
+      <div
+        className={`${embedded ? "bg-transparent border-0 rounded-none" : "bg-zinc-900/70 border border-zinc-700/50 rounded-lg"} overflow-hidden`}
+      >
+        {!hideHeader ? (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+            <FileCode size={14} className="text-sky-400" />
+            <span className="text-xs font-mono text-zinc-300">{fileName}</span>
+            {language && (
+              <span className="text-xs text-zinc-500 bg-zinc-700/50 px-1.5 py-0.5 rounded">
+                {language}
+              </span>
+            )}
+            <div className="flex items-center gap-1 ml-auto">
+              {(input.offset || input.limit) && (
+                <span className="text-xs text-zinc-500 mr-1">
+                  {input.offset && `from line ${input.offset}`}
+                  {input.offset && input.limit && ", "}
+                  {input.limit && `${input.limit} lines`}
+                </span>
+              )}
+              <CopyButton text={input.file_path} />
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-2 text-xs">
+            <FileCode size={14} className="text-sky-400" />
+            <span className="font-mono text-zinc-300">{input.file_path}</span>
             {(input.offset || input.limit) && (
-              <span className="text-xs text-zinc-500 mr-1">
+              <span className="text-zinc-500">
                 {input.offset && `from line ${input.offset}`}
                 {input.offset && input.limit && ", "}
                 {input.limit && `${input.limit} lines`}
               </span>
             )}
-            <CopyButton text={input.file_path} />
+            <CopyButton text={input.file_path} className="ml-auto" />
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
 export function FileContentRenderer(props: FileContentRendererProps) {
-  const { content, fileName } = props;
+  const { content, fileName, embedded = false } = props;
 
   if (!content) {
     return null;
@@ -107,7 +127,7 @@ export function FileContentRenderer(props: FileContentRendererProps) {
   const language = ext ? getLanguageFromExt(ext) : null;
 
   return (
-    <div className="w-full mt-2">
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
       <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
           <FileText size={14} className="text-sky-400" />

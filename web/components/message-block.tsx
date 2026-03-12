@@ -45,6 +45,7 @@ import { getFencedCodeBlock, MarkdownRenderer } from "./markdown-renderer";
 import {
   AskQuestionRenderer,
   BashRenderer,
+  CopyButton,
   EditRenderer,
   FunctionToolResultRenderer,
   GlobRenderer,
@@ -477,8 +478,12 @@ function highlightPatchCode(code: string, language: string | null): string {
   }
 }
 
-function ApplyPatchInputRenderer(props: { raw: string }) {
-  const { raw } = props;
+function ApplyPatchInputRenderer(props: {
+  raw: string;
+  embedded?: boolean;
+  hideHeader?: boolean;
+}) {
+  const { raw, embedded = false, hideHeader = false } = props;
   const lines = raw.replace(/\r\n/g, "\n").split("\n");
   const fileTypes = getPatchFileTypes(raw);
   const fileTypeLabel =
@@ -489,13 +494,19 @@ function ApplyPatchInputRenderer(props: { raw: string }) {
         : `${fileTypes.length} file types`;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-700/60 bg-zinc-950/80">
-      <div className="flex items-center justify-between border-b border-zinc-700/50 bg-zinc-900/70 px-3 py-1.5">
-        <span className="text-[10px] font-mono text-zinc-400">apply_patch</span>
-        <span className="text-[10px] font-mono text-zinc-500">
-          {fileTypeLabel}
-        </span>
-      </div>
+    <div
+      className={`overflow-hidden ${embedded ? "rounded-md border border-zinc-700/45 bg-zinc-950/70" : "rounded-lg border border-zinc-700/60 bg-zinc-950/80"}`}
+    >
+      {!hideHeader && (
+        <div
+          className={`flex items-center justify-between border-b border-zinc-700/50 px-3 py-1.5 ${embedded ? "bg-zinc-900/55" : "bg-zinc-900/70"}`}
+        >
+          <span className="text-[10px] font-mono text-zinc-400">apply_patch</span>
+          <span className="text-[10px] font-mono text-zinc-500">
+            {fileTypeLabel}
+          </span>
+        </div>
+      )}
       <pre className="m-0 max-h-[420px] overflow-auto rounded-none border-0 bg-transparent p-0 text-xs leading-relaxed">
         {(() => {
           let activeLanguage: string | null = null;
@@ -673,22 +684,35 @@ function summarizeValue(value: unknown): string {
   return String(value);
 }
 
-function GenericToolInputRenderer(props: { input: Record<string, unknown> }) {
+function GenericToolInputRenderer(props: {
+  input: Record<string, unknown>;
+  embedded?: boolean;
+  hideHeader?: boolean;
+}) {
   const entries = Object.entries(props.input);
+  const { embedded = false, hideHeader = false } = props;
 
   if (entries.length === 0) {
     return (
-      <div className="rounded-lg border border-zinc-700/50 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-500">
+      <div
+        className={`${embedded ? "rounded-md bg-zinc-900/40" : "rounded-lg border border-zinc-700/50 bg-zinc-900/70"} px-3 py-2 text-xs text-zinc-500`}
+      >
         No input arguments
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-700/50 bg-zinc-900/70">
-      <div className="border-b border-zinc-700/50 bg-zinc-800/30 px-3 py-2 text-xs font-medium text-zinc-300">
-        Parameters
-      </div>
+    <div
+      className={`overflow-hidden ${embedded ? "rounded-md bg-zinc-900/40" : "rounded-lg border border-zinc-700/50 bg-zinc-900/70"}`}
+    >
+      {!hideHeader && (
+        <div
+          className={`border-b border-zinc-700/50 px-3 py-2 text-xs font-medium text-zinc-300 ${embedded ? "bg-zinc-800/25" : "bg-zinc-800/30"}`}
+        >
+          Parameters
+        </div>
+      )}
       <div className="divide-y divide-zinc-800/50">
         {entries.map(([key, value]) => (
           <div key={key} className="flex items-start gap-3 px-3 py-2 text-xs">
@@ -718,12 +742,20 @@ function getRawToolInputValue(
 function renderFormattedToolInput(
   block: ContentBlock,
   input: Record<string, unknown>,
+  embedded: boolean,
+  hideHeader: boolean,
 ): JSX.Element {
   const toolName = (block.name || "").toLowerCase();
   const rawInput = typeof input.raw === "string" ? input.raw : null;
 
   if (toolName === "apply_patch" && rawInput) {
-    return <ApplyPatchInputRenderer raw={rawInput} />;
+    return (
+      <ApplyPatchInputRenderer
+        raw={rawInput}
+        embedded={embedded}
+        hideHeader={hideHeader}
+      />
+    );
   }
 
   if (
@@ -746,7 +778,13 @@ function renderFormattedToolInput(
             ? `session ${input.session_id}`
             : undefined;
 
-      return <BashRenderer input={{ command, description }} />;
+      return (
+        <BashRenderer
+          input={{ command, description }}
+          embedded={embedded}
+          hideHeader={hideHeader}
+        />
+      );
     }
   }
 
@@ -758,6 +796,8 @@ function renderFormattedToolInput(
           offset: asOptionalNumber(input.offset),
           limit: asOptionalNumber(input.limit),
         }}
+        embedded={embedded}
+        hideHeader={hideHeader}
       />
     );
   }
@@ -771,6 +811,8 @@ function renderFormattedToolInput(
           glob: asOptionalString(input.glob),
           type: asOptionalString(input.type),
         }}
+        embedded={embedded}
+        hideHeader={hideHeader}
       />
     );
   }
@@ -782,6 +824,8 @@ function renderFormattedToolInput(
           pattern: input.pattern,
           path: asOptionalString(input.path),
         }}
+        embedded={embedded}
+        hideHeader={hideHeader}
       />
     );
   }
@@ -794,6 +838,8 @@ function renderFormattedToolInput(
           old_string: typeof input.old_string === "string" ? input.old_string : "",
           new_string: typeof input.new_string === "string" ? input.new_string : "",
         }}
+        embedded={embedded}
+        hideHeader={hideHeader}
       />
     );
   }
@@ -808,6 +854,8 @@ function renderFormattedToolInput(
               ? input.content
               : stringifyJson(input.content),
         }}
+        embedded={embedded}
+        hideHeader={hideHeader}
       />
     );
   }
@@ -815,14 +863,26 @@ function renderFormattedToolInput(
   if (toolName === "update_plan" || toolName === "todowrite") {
     const todos = getTodoItemsFromInput(input);
     if (todos.length > 0) {
-      return <TodoRenderer todos={todos} />;
+      return (
+        <TodoRenderer
+          todos={todos}
+          embedded={embedded}
+          hideHeader={hideHeader}
+        />
+      );
     }
   }
 
   if (toolName === "request_user_input" || toolName === "askuserquestion") {
     const normalizedInput = toAskQuestionInput(input);
     if (normalizedInput.questions.length > 0) {
-      return <AskQuestionRenderer input={normalizedInput} />;
+      return (
+        <AskQuestionRenderer
+          input={normalizedInput}
+          embedded={embedded}
+          hideHeader={hideHeader}
+        />
+      );
     }
   }
 
@@ -854,23 +914,32 @@ function renderFormattedToolInput(
                 ? input.id
                 : undefined,
         }}
+        embedded={embedded}
+        hideHeader={hideHeader}
       />
     );
   }
 
-  return <GenericToolInputRenderer input={input} />;
+  return (
+    <GenericToolInputRenderer
+      input={input}
+      embedded={embedded}
+      hideHeader={hideHeader}
+    />
+  );
 }
 
 function renderToolInput(
   block: ContentBlock,
   input: Record<string, unknown>,
   viewMode: JsonViewMode,
+  embedded: boolean,
 ): JSX.Element {
   if (viewMode === "raw") {
     return <JsonRenderer value={getRawToolInputValue(block, input)} />;
   }
 
-  return renderFormattedToolInput(block, input);
+  return renderFormattedToolInput(block, input, embedded, embedded);
 }
 
 const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
@@ -950,11 +1019,49 @@ function getToolPreview(
   return null;
 }
 
+function getToolCopyText(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+): string | null {
+  if (!input) {
+    return null;
+  }
+
+  const name = toolName.toLowerCase();
+  if (name === "exec_command" || name === "bash") {
+    if (typeof input.cmd === "string" && input.cmd.length > 0) {
+      return input.cmd;
+    }
+    if (typeof input.command === "string" && input.command.length > 0) {
+      return input.command;
+    }
+    return null;
+  }
+
+  if (name === "write_stdin") {
+    return typeof input.chars === "string" && input.chars.length > 0
+      ? input.chars
+      : null;
+  }
+
+  return null;
+}
+
+function getToolExpandedLabel(toolName: string): string | null {
+  const name = toolName.toLowerCase();
+  if (name === "exec_command" || name === "bash" || name === "write_stdin") {
+    return "Command";
+  }
+  return null;
+}
+
 interface ToolResultRendererProps {
   toolName: string;
   content: string;
   isError?: boolean;
   command?: string;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 function parseJsonValue(content: string): { parsed: boolean; value: unknown } {
@@ -1005,6 +1112,14 @@ function parseExecPreview(content: string): string | null {
     .find(Boolean);
 
   return firstLine ? getTruncatedPreview(firstLine, 60) : null;
+}
+
+function getExecBody(content: string): string {
+  const outputMarker = "\nOutput:\n";
+  const outputIndex = content.indexOf(outputMarker);
+  return outputIndex >= 0
+    ? content.slice(outputIndex + outputMarker.length).trimEnd()
+    : content;
 }
 
 function getToolResultPreview(
@@ -1240,7 +1355,7 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
       block.input && typeof block.input === "object"
         ? (block.input as Record<string, unknown>)
         : undefined;
-    const hasInput = input && Object.keys(input).length > 0;
+    const hasInput = !!input && Object.keys(input).length > 0;
     const Icon = getToolIcon(block.name || "");
     const preview = getToolPreview(block.name || "", input);
     const toolName = block.name?.toLowerCase() || "";
@@ -1250,55 +1365,76 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
       toolName === "askuserquestion" ||
       toolName === "task";
     const isExpanded = expanded || shouldAutoExpand;
+    const canToggleExpanded = hasInput && !shouldAutoExpand;
     const supportsRawToggle = hasInput;
+    const expandedLabel = getToolExpandedLabel(toolName);
+    const copyText = isExpanded ? getToolCopyText(toolName, input) : null;
 
     return (
       <div className={isExpanded ? "w-full" : ""}>
-        <div className="inline-flex items-center gap-1.5">
-          <button
-            onClick={() =>
-              hasInput && !shouldAutoExpand && setExpanded(!expanded)
-            }
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-500/10 hover:bg-slate-500/15 text-[11px] text-slate-300 transition-colors border border-slate-500/20"
-          >
-            <Icon size={12} className="opacity-60" />
-            <span className="font-medium text-slate-200">{block.name}</span>
-            {preview && (
-              <span className="text-slate-500 font-normal truncate max-w-[200px]">
-                {preview}
-              </span>
-            )}
-            {hasInput && !shouldAutoExpand && (
-              <span className="text-[10px] opacity-40 ml-0.5">
-                {expanded ? "▼" : "▶"}
-              </span>
-            )}
-          </button>
-          {supportsRawToggle && isExpanded && (
+        <div className="overflow-hidden rounded-lg border border-slate-500/20 bg-slate-500/10">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5">
             <button
-              onClick={() =>
-                setJsonViewMode((current) =>
-                  current === "formatted" ? "raw" : "formatted",
-                )
-              }
-              className={`rounded-lg border px-2 py-1 text-[11px] font-mono transition-colors ${
-                jsonViewMode === "raw"
-                  ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
-                  : "border-slate-500/20 bg-slate-500/10 text-slate-300 hover:bg-slate-500/15"
+              type="button"
+              onClick={() => canToggleExpanded && setExpanded(!expanded)}
+              className={`flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11px] transition-colors ${
+                canToggleExpanded
+                  ? "cursor-pointer text-slate-200 hover:text-slate-100"
+                  : "cursor-default text-slate-200"
               }`}
-              title={
-                jsonViewMode === "raw"
-                  ? "Show formatted view"
-                  : "Show raw JSON"
-              }
             >
-              {"</>"}
+              <Icon size={12} className="opacity-60" />
+              <span className="font-medium">{block.name}</span>
+              {expandedLabel && isExpanded && (
+                <span className="font-normal text-slate-400">{expandedLabel}</span>
+              )}
+              {preview && !isExpanded && (
+                <span className="truncate font-normal text-slate-400 max-w-[200px]">
+                  {preview}
+                </span>
+              )}
+              {canToggleExpanded && (
+                <span className="ml-0.5 text-[10px] opacity-40">
+                  {expanded ? "▼" : "▶"}
+                </span>
+              )}
             </button>
+            {copyText && (
+              <CopyButton
+                text={copyText}
+                title="Copy command"
+                className="rounded-lg border border-slate-500/20 bg-slate-500/10 hover:bg-slate-500/15"
+              />
+            )}
+            {supportsRawToggle && isExpanded && (
+              <button
+                type="button"
+                onClick={() =>
+                  setJsonViewMode((current) =>
+                    current === "formatted" ? "raw" : "formatted",
+                  )
+                }
+                className={`rounded-lg border px-2 py-1 text-[11px] font-mono transition-colors ${
+                  jsonViewMode === "raw"
+                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                    : "border-slate-500/20 bg-slate-500/10 text-slate-300 hover:bg-slate-500/15"
+                }`}
+                title={
+                  jsonViewMode === "raw"
+                    ? "Show formatted view"
+                    : "Show raw JSON"
+                }
+              >
+                {"</>"}
+              </button>
+            )}
+          </div>
+          {isExpanded && hasInput && input && (
+            <div className="border-t border-slate-500/20 px-2.5 py-2">
+              {renderToolInput(block, input, jsonViewMode, true)}
+            </div>
           )}
         </div>
-        {isExpanded && hasInput && (
-          <div className="mt-2">{renderToolInput(block, input, jsonViewMode)}</div>
-        )}
       </div>
     );
   }
@@ -1331,73 +1467,125 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
         : null;
     const rawJsonValue = getToolResultRawValue(block, toolName);
     const supportsRawToggle = rawJsonValue !== null;
+    const canToggleExpanded = hasContent;
+    const normalizedToolName = toolName.toLowerCase();
+    const isCommandResult =
+      normalizedToolName === "exec_command" ||
+      normalizedToolName === "write_stdin" ||
+      normalizedToolName === "bash";
+    const expandedLabel =
+      expanded && isCommandResult ? "Terminal output" : null;
+    const resultCopyText =
+      expanded && isCommandResult && hasContent
+        ? getExecBody(resultContent)
+        : null;
 
     return (
       <div className={expanded ? "w-full" : ""}>
-        <div className="inline-flex items-center gap-1.5">
-          <button
-            onClick={() => hasContent && setExpanded(!expanded)}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] transition-colors border ${
-              isError
-                ? "bg-rose-500/10 hover:bg-rose-500/15 text-rose-400/90 border-rose-500/20"
-                : "bg-teal-500/10 hover:bg-teal-500/15 text-teal-400/90 border-teal-500/20"
-            }`}
-          >
-            {isError ? (
-              <X size={12} className="opacity-70" />
-            ) : (
-              <Check size={12} className="opacity-70" />
-            )}
-            <span className="font-medium">{isError ? "error" : "result"}</span>
-            {contentPreview && !expanded && (
-              <span
-                className={`font-normal truncate max-w-[200px] ${isError ? "text-rose-500/70" : "text-teal-500/70"}`}
-              >
-                {contentPreview}
-              </span>
-            )}
-            {hasContent && (
-              <span className="text-[10px] opacity-40 ml-0.5">
-                {expanded ? "▼" : "▶"}
-              </span>
-            )}
-          </button>
-          {supportsRawToggle && expanded && (
+        <div
+          className={`overflow-hidden rounded-lg border ${
+            isError
+              ? "border-rose-500/20 bg-rose-500/10"
+              : "border-teal-500/20 bg-teal-500/10"
+          }`}
+        >
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5">
             <button
-              onClick={() =>
-                setJsonViewMode((current) =>
-                  current === "formatted" ? "raw" : "formatted",
-                )
-              }
-              className={`rounded-lg border px-2 py-1 text-[11px] font-mono transition-colors ${
-                jsonViewMode === "raw"
-                  ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
-                  : "border-teal-500/20 bg-teal-500/10 text-teal-200 hover:bg-teal-500/15"
+              type="button"
+              onClick={() => canToggleExpanded && setExpanded(!expanded)}
+              className={`flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11px] transition-colors ${
+                canToggleExpanded
+                  ? isError
+                    ? "cursor-pointer text-rose-300 hover:text-rose-200"
+                    : "cursor-pointer text-teal-200 hover:text-teal-100"
+                  : isError
+                    ? "cursor-default text-rose-300"
+                    : "cursor-default text-teal-200"
               }`}
-              title={
-                jsonViewMode === "raw"
-                  ? "Show formatted view"
-                  : "Show raw JSON"
-              }
             >
-              {"</>"}
+              {isError ? (
+                <X size={12} className="opacity-70" />
+              ) : (
+                <Check size={12} className="opacity-70" />
+              )}
+              <span className="font-medium">{isError ? "error" : "result"}</span>
+              {expandedLabel && (
+                <span
+                  className={`font-normal ${isError ? "text-rose-400/75" : "text-teal-400/75"}`}
+                >
+                  {expandedLabel}
+                </span>
+              )}
+              {contentPreview && !expanded && (
+                <span
+                  className={`truncate font-normal max-w-[220px] ${isError ? "text-rose-400/70" : "text-teal-400/70"}`}
+                >
+                  {contentPreview}
+                </span>
+              )}
+              {canToggleExpanded && (
+                <span className="ml-0.5 text-[10px] opacity-40">
+                  {expanded ? "▼" : "▶"}
+                </span>
+              )}
             </button>
+            {resultCopyText && (
+              <CopyButton
+                text={resultCopyText}
+                title="Copy output"
+                className={`rounded-lg border ${
+                  isError
+                    ? "border-rose-500/25 bg-rose-500/10 hover:bg-rose-500/15"
+                    : "border-teal-500/25 bg-teal-500/10 hover:bg-teal-500/15"
+                }`}
+              />
+            )}
+            {supportsRawToggle && expanded && (
+              <button
+                type="button"
+                onClick={() =>
+                  setJsonViewMode((current) =>
+                    current === "formatted" ? "raw" : "formatted",
+                  )
+                }
+                className={`rounded-lg border px-2 py-1 text-[11px] font-mono transition-colors ${
+                  jsonViewMode === "raw"
+                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                    : isError
+                      ? "border-rose-500/25 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15"
+                      : "border-teal-500/25 bg-teal-500/10 text-teal-200 hover:bg-teal-500/15"
+                }`}
+                title={
+                  jsonViewMode === "raw"
+                    ? "Show formatted view"
+                    : "Show raw JSON"
+                }
+              >
+                {"</>"}
+              </button>
+            )}
+          </div>
+          {expanded && hasContent && (
+            <div
+              className={`border-t px-2.5 py-2 ${
+                isError ? "border-rose-500/20" : "border-teal-500/20"
+              }`}
+            >
+              {supportsRawToggle && jsonViewMode === "raw" ? (
+                <JsonRenderer value={rawJsonValue} />
+              ) : (
+                <ToolResultRenderer
+                  toolName={toolName}
+                  content={resultContent}
+                  isError={isError}
+                  command={command}
+                  embedded
+                  hideHeader={isCommandResult}
+                />
+              )}
+            </div>
           )}
         </div>
-        {expanded &&
-          hasContent &&
-          (supportsRawToggle && jsonViewMode === "raw" ? (
-            <div className="mt-2">
-              <JsonRenderer value={rawJsonValue} />
-            </div>
-          ) : (
-            <ToolResultRenderer
-              toolName={toolName}
-              content={resultContent}
-              isError={isError}
-              command={command}
-            />
-          ))}
       </div>
     );
   }

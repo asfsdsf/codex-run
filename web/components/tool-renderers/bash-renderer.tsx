@@ -12,11 +12,14 @@ interface BashInput {
 
 interface BashRendererProps {
   input: BashInput;
+  embedded?: boolean;
+  hideHeader?: boolean;
 }
 
 interface BashResultRendererProps {
   content: string;
   isError?: boolean;
+  embedded?: boolean;
 }
 
 const HTML_ESCAPE_MAP: Record<string, string> = {
@@ -51,7 +54,7 @@ function highlightShellCommand(command: string): string {
 }
 
 export function BashRenderer(props: BashRendererProps) {
-  const { input } = props;
+  const { input, embedded = false, hideHeader = false } = props;
   const [copied, setCopied] = useState(false);
 
   if (!input || !input.command) {
@@ -69,26 +72,30 @@ export function BashRenderer(props: BashRendererProps) {
   };
 
   return (
-    <div className="w-full mt-2">
-      <div className="bg-zinc-900/70 border border-zinc-700/50 rounded-lg overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
-          <Terminal size={14} className="text-green-400" />
-          <span className="text-xs font-medium text-zinc-300">Command</span>
-          {description && (
-            <span className="text-xs text-zinc-500 truncate ml-1">— {description}</span>
-          )}
-          <button
-            onClick={handleCopy}
-            className="ml-auto p-1 hover:bg-zinc-700/50 rounded transition-colors"
-            title="Copy command"
-          >
-            {copied ? (
-              <Check size={12} className="text-green-400" />
-            ) : (
-              <Copy size={12} className="text-zinc-500" />
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
+      <div
+        className={`${embedded ? "bg-transparent border-0 rounded-none" : "bg-zinc-900/70 border border-zinc-700/50 rounded-lg"} overflow-hidden`}
+      >
+        {!hideHeader && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/30">
+            <Terminal size={14} className="text-green-400" />
+            <span className="text-xs font-medium text-zinc-300">Command</span>
+            {description && (
+              <span className="text-xs text-zinc-500 truncate ml-1">— {description}</span>
             )}
-          </button>
-        </div>
+            <button
+              onClick={handleCopy}
+              className="ml-auto p-1 hover:bg-zinc-700/50 rounded transition-colors"
+              title="Copy command"
+            >
+              {copied ? (
+                <Check size={12} className="text-green-400" />
+              ) : (
+                <Copy size={12} className="text-zinc-500" />
+              )}
+            </button>
+          </div>
+        )}
         <div className="p-3 overflow-x-auto">
           <div className="flex items-start gap-2">
             <pre className="text-xs font-mono m-0 p-0 bg-transparent! text-zinc-200 whitespace-pre-wrap break-all">
@@ -105,11 +112,11 @@ export function BashRenderer(props: BashRendererProps) {
 }
 
 export function BashResultRenderer(props: BashResultRendererProps) {
-  const { content, isError } = props;
+  const { content, isError, embedded = false } = props;
 
   if (!content || content.trim().length === 0) {
     return (
-      <div className="w-full mt-2">
+      <div className={`w-full ${embedded ? "" : "mt-2"}`}>
         <div className="flex items-center gap-2 px-3 py-2 bg-zinc-800/30 border border-zinc-700/50 rounded-lg">
           <CheckCircle2 size={14} className="text-teal-400" />
           <span className="text-xs text-zinc-400">Command completed successfully (no output)</span>
@@ -125,7 +132,7 @@ export function BashResultRenderer(props: BashResultRendererProps) {
   const displayContent = displayLines.join("\n");
 
   return (
-    <div className="w-full mt-2">
+    <div className={`w-full ${embedded ? "" : "mt-2"}`}>
       <div
         className={`border rounded-lg overflow-hidden ${
           isError
