@@ -262,7 +262,7 @@ export function createServer(options: ServerOptions) {
       };
 
       const handleSessionsChange = async (
-        _sessionId?: string,
+        changedSessionId?: string,
         _filePath?: string,
       ) => {
         if (!isConnected) {
@@ -270,19 +270,31 @@ export function createServer(options: ServerOptions) {
         }
         try {
           const sessions = await getSessions();
+          const updateMap = new Map<string, (typeof sessions)[number]>();
           const newOrUpdated = sessions.filter((s) => {
             const known = knownSessions.get(s.id);
             return known === undefined || known !== s.timestamp;
           });
+          for (const session of newOrUpdated) {
+            updateMap.set(session.id, session);
+          }
+
+          if (changedSessionId) {
+            const changedSession = sessions.find((s) => s.id === changedSessionId);
+            if (changedSession) {
+              updateMap.set(changedSession.id, changedSession);
+            }
+          }
 
           for (const s of sessions) {
             knownSessions.set(s.id, s.timestamp);
           }
 
-          if (newOrUpdated.length > 0) {
+          const updates = Array.from(updateMap.values());
+          if (updates.length > 0) {
             await stream.writeSSE({
               event: "sessionsUpdate",
-              data: JSON.stringify(newOrUpdated),
+              data: JSON.stringify(updates),
             });
           }
         } catch {

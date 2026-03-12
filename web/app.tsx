@@ -1,4 +1,5 @@
 import {
+  memo,
   useState,
   useEffect,
   useCallback,
@@ -7,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type {
+  ConversationMessage,
   Session,
   CodexCollaborationModeOption,
   CodexModelOption,
@@ -32,6 +34,7 @@ import {
   listCodexCollaborationModes,
   listCodexModels,
   sendCodexMessage,
+  getConversation,
 } from "./api";
 
 interface SessionHeaderProps {
@@ -56,6 +59,7 @@ const MESSAGE_BOX_MAX_HEIGHT = 160;
 const MESSAGE_BOX_DEFAULT_HEIGHT = 56;
 const PLAN_IMPLEMENTATION_MESSAGE = "Implement the plan.";
 const SESSION_MODE_STORAGE_KEY = "codex-run:session-plan-mode:v1";
+const MESSAGE_HISTORY_STORAGE_KEY = "codex-run:message-history:v1";
 const TOKEN_COUNT_FORMATTER = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
@@ -71,6 +75,111 @@ interface PendingTurn {
 interface ResizeState {
   startY: number;
   startHeight: number;
+}
+
+interface HistoryNavigationState {
+  index: number | null;
+  draftBeforeNavigation: string;
+}
+
+interface MessageComposerProps {
+  sessionId: string;
+  history: string[];
+  isGeneratingForSelectedSession: boolean;
+  isSendingLocked: boolean;
+  sendingMessage: boolean;
+  stoppingTurn: boolean;
+  messageBoxHeight: number;
+  onResizeMessageBoxStart: (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => void;
+  onSendMessage: (text: string) => Promise<boolean>;
+  onStopConversation: () => Promise<void>;
+}
+
+function extractMessageText(message: ConversationMessage): string {
+  const content = message.message?.content;
+  if (typeof content === "string") {
+    return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const textParts = content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text.trim())
+    .filter((text) => text.length > 0);
+  return textParts.join("\n").trim();
+}
+
+function extractUserInputHistory(messages: ConversationMessage[]): string[] {
+  const userMessages = messages.filter((message) => message.type === "user");
+  if (userMessages.length === 0) {
+    return [];
+  }
+
+  // AGENTS.md bootstrap content is the first session message when it is
+  // immediately followed by another user message.
+  const firstMessage = messages[0];
+  const secondMessage = messages[1];
+  const skipFirstUserMessage =
+    firstMessage?.type === "user" && secondMessage?.type === "user";
+
+  const source = skipFirstUserMessage
+    ? userMessages.filter((message) => message !== firstMessage)
+    : userMessages;
+
+  return source.map(extractMessageText).filter((text) => text.length > 0);
+}
+
+function loadMessageHistoryMap(): Record<string, string[]> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(MESSAGE_HISTORY_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const result: Record<string, string[]> = {};
+    for (const [sessionId, entries] of Object.entries(parsed)) {
+      if (!Array.isArray(entries)) {
+        continue;
+      }
+
+      const normalized = entries
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+      result[sessionId] = normalized;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistMessageHistoryMap(value: Record<string, string[]>): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      MESSAGE_HISTORY_STORAGE_KEY,
+      JSON.stringify(value),
+    );
+  } catch {
+    // Ignore storage write errors (private mode, quota, etc.)
+  }
 }
 
 function loadSessionModeMap(): Record<string, CollaborationModeKey> {
@@ -109,7 +218,10 @@ function persistSessionModeMap(
   }
 
   try {
-    window.sessionStorage.setItem(SESSION_MODE_STORAGE_KEY, JSON.stringify(value));
+    window.sessionStorage.setItem(
+      SESSION_MODE_STORAGE_KEY,
+      JSON.stringify(value),
+    );
   } catch {
     // Ignore storage write errors (private mode, quota, etc.)
   }
@@ -152,6 +264,204 @@ function SessionHeader(props: SessionHeaderProps) {
   );
 }
 
+const MessageComposer = memo(function MessageComposer(
+  props: MessageComposerProps,
+) {
+  const {
+    sessionId,
+    history,
+    isGeneratingForSelectedSession,
+    isSendingLocked,
+    sendingMessage,
+    stoppingTurn,
+    messageBoxHeight,
+    onResizeMessageBoxStart,
+    onSendMessage,
+    onStopConversation,
+  } = props;
+  const [draft, setDraft] = useState("");
+  const [historyNavigation, setHistoryNavigation] =
+    useState<HistoryNavigationState>({
+      index: null,
+      draftBeforeNavigation: "",
+    });
+
+  useEffect(() => {
+    setDraft("");
+    setHistoryNavigation({
+      index: null,
+      draftBeforeNavigation: "",
+    });
+  }, [sessionId]);
+
+  const navigateInputHistory = useCallback(
+    (direction: "up" | "down") => {
+      if (history.length === 0) {
+        return;
+      }
+
+      if (direction === "up") {
+        if (historyNavigation.index === null) {
+          setHistoryNavigation({
+            index: history.length - 1,
+            draftBeforeNavigation: draft,
+          });
+          setDraft(history[history.length - 1]);
+          return;
+        }
+
+        if (historyNavigation.index > 0) {
+          const nextIndex = historyNavigation.index - 1;
+          setHistoryNavigation((current) => ({
+            ...current,
+            index: nextIndex,
+          }));
+          setDraft(history[nextIndex]);
+        }
+        return;
+      }
+
+      if (historyNavigation.index === null) {
+        return;
+      }
+
+      if (historyNavigation.index < history.length - 1) {
+        const nextIndex = historyNavigation.index + 1;
+        setHistoryNavigation((current) => ({
+          ...current,
+          index: nextIndex,
+        }));
+        setDraft(history[nextIndex]);
+        return;
+      }
+
+      setHistoryNavigation({
+        index: null,
+        draftBeforeNavigation: "",
+      });
+      setDraft(historyNavigation.draftBeforeNavigation);
+    },
+    [draft, history, historyNavigation],
+  );
+
+  const handleSendMessage = useCallback(async () => {
+    const sent = await onSendMessage(draft);
+    if (!sent) {
+      return;
+    }
+
+    setDraft("");
+    setHistoryNavigation({
+      index: null,
+      draftBeforeNavigation: "",
+    });
+  }, [draft, onSendMessage]);
+
+  return (
+    <div className="flex items-end gap-2">
+      <div className="relative flex-1">
+        {isGeneratingForSelectedSession && (
+          <div className="pointer-events-none absolute inset-0 flex items-start gap-2 px-3 py-2 text-sm text-zinc-300">
+            <span className="thinking-dot mt-[0.35rem]" />
+            <span className="thinking-label">Working...</span>
+          </div>
+        )}
+        <textarea
+          value={isGeneratingForSelectedSession ? "" : draft}
+          onChange={(event) => {
+            if (historyNavigation.index !== null) {
+              setHistoryNavigation({
+                index: null,
+                draftBeforeNavigation: "",
+              });
+            }
+            setDraft(event.target.value);
+          }}
+          disabled={isSendingLocked}
+          onKeyDown={(event) => {
+            const selectionStart = event.currentTarget.selectionStart;
+            const selectionEnd = event.currentTarget.selectionEnd;
+            const hasSelection = selectionStart !== selectionEnd;
+
+            if (event.key === "ArrowUp" && !hasSelection) {
+              const isOnFirstLine = !event.currentTarget.value
+                .slice(0, selectionStart)
+                .includes("\n");
+              if (isOnFirstLine) {
+                event.preventDefault();
+                navigateInputHistory("up");
+                return;
+              }
+            }
+
+            if (event.key === "ArrowDown" && !hasSelection) {
+              const isOnLastLine = !event.currentTarget.value
+                .slice(selectionStart)
+                .includes("\n");
+              if (isOnLastLine) {
+                event.preventDefault();
+                navigateInputHistory("down");
+                return;
+              }
+            }
+
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing &&
+              !isGeneratingForSelectedSession
+            ) {
+              event.preventDefault();
+              void handleSendMessage();
+            }
+          }}
+          placeholder={isGeneratingForSelectedSession ? "" : "Message Codex..."}
+          rows={2}
+          style={{ height: `${messageBoxHeight}px` }}
+          className="w-full min-h-[42px] max-h-40 resize-none bg-zinc-900/70 text-sm text-zinc-200 rounded border border-zinc-800 px-3 py-2 pr-8 focus:outline-none"
+        />
+        <button
+          type="button"
+          onPointerDown={onResizeMessageBoxStart}
+          disabled={isSendingLocked}
+          aria-label="Resize message box"
+          title="Drag up or down to resize"
+          className="absolute top-1 right-1 z-10 flex h-5 w-5 items-center justify-center rounded bg-zinc-900/90 border border-zinc-700/90 text-zinc-300 shadow-sm transition-colors cursor-ns-resize hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          <GripVertical className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <button
+        onClick={() => {
+          if (isGeneratingForSelectedSession) {
+            void onStopConversation();
+            return;
+          }
+          void handleSendMessage();
+        }}
+        disabled={
+          isGeneratingForSelectedSession
+            ? stoppingTurn
+            : sendingMessage || isSendingLocked || !draft.trim()
+        }
+        className={`h-10 px-4 text-sm rounded text-zinc-50 disabled:opacity-50 cursor-pointer ${
+          isGeneratingForSelectedSession
+            ? "bg-red-700/90 hover:bg-red-700"
+            : "bg-cyan-700/80 hover:bg-cyan-700"
+        }`}
+      >
+        {isGeneratingForSelectedSession
+          ? stoppingTurn
+            ? "Stopping..."
+            : "Stop"
+          : sendingMessage
+            ? "Sending..."
+            : "Send"}
+      </button>
+    </div>
+  );
+});
+
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [projects, setProjects] = useState<string[]>([]);
@@ -171,8 +481,12 @@ function App() {
   const [selectedModeKey, setSelectedModeKey] =
     useState<CollaborationModeKey>("default");
   const [selectedModelId, setSelectedModelId] = useState("");
-  const [selectedEffort, setSelectedEffort] = useState<CodexReasoningEffort | "">("");
-  const [messageDraft, setMessageDraft] = useState("");
+  const [selectedEffort, setSelectedEffort] = useState<
+    CodexReasoningEffort | ""
+  >("");
+  const [messageHistoryBySession, setMessageHistoryBySession] = useState<
+    Record<string, string[]>
+  >(() => loadMessageHistoryMap());
   const [newSessionCwd, setNewSessionCwd] = useState("");
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingTurn, setStoppingTurn] = useState(false);
@@ -188,6 +502,7 @@ function App() {
   const [contextUsedTokens, setContextUsedTokens] = useState<number | null>(
     null,
   );
+  const [contextRefreshVersion, setContextRefreshVersion] = useState(0);
   const waitSuppressSessionsRef = useRef<Set<string>>(new Set());
   const resizeStateRef = useRef<ResizeState | null>(null);
 
@@ -341,7 +656,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSession, selectedSessionData?.timestamp]);
+  }, [selectedSession, selectedSessionData?.timestamp, contextRefreshVersion]);
 
   const handleSessionsFull = useCallback((event: MessageEvent) => {
     const data: Session[] = JSON.parse(event.data);
@@ -349,18 +664,29 @@ function App() {
     setLoading(false);
   }, []);
 
-  const handleSessionsUpdate = useCallback((event: MessageEvent) => {
-    const updates: Session[] = JSON.parse(event.data);
-    setSessions((prev) => {
-      const sessionMap = new Map(prev.map((s) => [s.id, s]));
-      for (const update of updates) {
-        sessionMap.set(update.id, update);
+  const handleSessionsUpdate = useCallback(
+    (event: MessageEvent) => {
+      const updates: Session[] = JSON.parse(event.data);
+      const includesSelectedSession =
+        !!selectedSession &&
+        updates.some((update) => update.id === selectedSession);
+
+      setSessions((prev) => {
+        const sessionMap = new Map(prev.map((s) => [s.id, s]));
+        for (const update of updates) {
+          sessionMap.set(update.id, update);
+        }
+        return Array.from(sessionMap.values()).sort(
+          (a, b) => b.timestamp - a.timestamp,
+        );
+      });
+
+      if (includesSelectedSession) {
+        setContextRefreshVersion((value) => value + 1);
       }
-      return Array.from(sessionMap.values()).sort(
-        (a, b) => b.timestamp - a.timestamp,
-      );
-    });
-  }, []);
+    },
+    [selectedSession],
+  );
 
   const handleSessionsError = useCallback(() => {
     setLoading(false);
@@ -480,8 +806,51 @@ function App() {
   }, [sessionModeById]);
 
   useEffect(() => {
+    persistMessageHistoryMap(messageHistoryBySession);
+  }, [messageHistoryBySession]);
+
+  useEffect(() => {
     setSelectedModeKey(getSessionMode(selectedSession));
   }, [getSessionMode, selectedSession]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      return;
+    }
+
+    let cancelled = false;
+
+    getConversation(selectedSession)
+      .then((messages) => {
+        if (cancelled) {
+          return;
+        }
+
+        const userInputs = extractUserInputHistory(messages);
+
+        setMessageHistoryBySession((current) => {
+          const existing = current[selectedSession] ?? [];
+          if (
+            existing.length === userInputs.length &&
+            existing.every((value, index) => value === userInputs[index])
+          ) {
+            return current;
+          }
+
+          return {
+            ...current,
+            [selectedSession]: userInputs,
+          };
+        });
+      })
+      .catch(() => {
+        // Keep existing local history if conversation fetch fails.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
     setSelectedSession(sessionId);
@@ -513,7 +882,9 @@ function App() {
       setSelectedProject(cwd);
       setSelectedSession(created.threadId);
     } catch (error) {
-      setInteractionError(error instanceof Error ? error.message : String(error));
+      setInteractionError(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       setCreatingSession(false);
     }
@@ -529,21 +900,20 @@ function App() {
     async (
       text: string,
       options?: {
-        clearDraft?: boolean;
         modeOverride?: CollaborationModeKey;
       },
-    ) => {
+    ): Promise<boolean> => {
       if (
         !selectedSession ||
         sendingMessage ||
         pendingTurn?.sessionId === selectedSession
       ) {
-        return;
+        return false;
       }
 
       const normalizedText = text.trim();
       if (!normalizedText) {
-        return;
+        return false;
       }
 
       const requestedMode = options?.modeOverride ?? selectedModeKey;
@@ -573,17 +943,17 @@ function App() {
           },
         });
 
-        if (options?.clearDraft) {
-          setMessageDraft("");
-        }
-
         setSessionMode(sessionId, modeToUse);
         setPendingTurn({
           sessionId,
           turnId: response.turnId,
         });
+        return true;
       } catch (error) {
-        setInteractionError(error instanceof Error ? error.message : String(error));
+        setInteractionError(
+          error instanceof Error ? error.message : String(error),
+        );
+        return false;
       } finally {
         setSendingMessage(false);
       }
@@ -601,9 +971,26 @@ function App() {
     ],
   );
 
-  const handleSendMessage = useCallback(async () => {
-    await sendMessageText(messageDraft, { clearDraft: true });
-  }, [messageDraft, sendMessageText]);
+  const handleSendMessage = useCallback(
+    async (text: string): Promise<boolean> => {
+      const sessionId = selectedSession;
+      const normalizedText = text.trim();
+      const sent = await sendMessageText(normalizedText);
+      if (!sent || !sessionId) {
+        return sent;
+      }
+
+      setMessageHistoryBySession((current) => {
+        const sessionHistory = current[sessionId] ?? [];
+        return {
+          ...current,
+          [sessionId]: [...sessionHistory, normalizedText],
+        };
+      });
+      return true;
+    },
+    [selectedSession, sendMessageText],
+  );
 
   const handlePlanProposalAction = useCallback(
     async (sessionId: string, action: "implement" | "stay") => {
@@ -629,7 +1016,9 @@ function App() {
     }
 
     if (!selectedSession) {
-      setSelectedModeKey((current) => (current === "plan" ? "default" : "plan"));
+      setSelectedModeKey((current) =>
+        current === "plan" ? "default" : "plan",
+      );
       return;
     }
 
@@ -640,7 +1029,11 @@ function App() {
   }, [hasPlanMode, selectedModeKey, selectedSession, setSessionMode]);
 
   const handleStopConversation = useCallback(async () => {
-    if (!selectedSession || pendingTurn?.sessionId !== selectedSession || stoppingTurn) {
+    if (
+      !selectedSession ||
+      pendingTurn?.sessionId !== selectedSession ||
+      stoppingTurn
+    ) {
       return;
     }
 
@@ -655,7 +1048,9 @@ function App() {
       try {
         await interruptCodexThread(targetSessionId);
       } catch (error) {
-        setInteractionError(error instanceof Error ? error.message : String(error));
+        setInteractionError(
+          error instanceof Error ? error.message : String(error),
+        );
       } finally {
         setStoppingTurn(false);
       }
@@ -952,7 +1347,9 @@ function App() {
                     }}
                     className="h-9 min-w-[140px] bg-zinc-900/70 text-zinc-300 text-xs rounded border border-zinc-800 px-2.5 focus:outline-none"
                   >
-                    <option value={DEFAULT_OPTION_VALUE}>Effort: default</option>
+                    <option value={DEFAULT_OPTION_VALUE}>
+                      Effort: default
+                    </option>
                     {effortOptions.map((effort) => (
                       <option key={effort} value={effort}>
                         {effort}
@@ -964,75 +1361,20 @@ function App() {
                   </span>
                 </div>
 
-                <div className="flex items-end gap-2">
-                  <div className="relative flex-1">
-                    {isGeneratingForSelectedSession && !messageDraft.trim() && (
-                      <div className="pointer-events-none absolute inset-0 flex items-start gap-2 px-3 py-2 text-sm text-zinc-300">
-                        <span className="thinking-dot mt-[0.35rem]" />
-                        <span className="thinking-label">Working...</span>
-                      </div>
-                    )}
-                    <textarea
-                      value={messageDraft}
-                      onChange={(event) => setMessageDraft(event.target.value)}
-                      disabled={isSendingLocked}
-                      onKeyDown={(event) => {
-                        if (
-                          event.key === "Enter" &&
-                          !event.shiftKey &&
-                          !event.nativeEvent.isComposing &&
-                          !isGeneratingForSelectedSession
-                        ) {
-                          event.preventDefault();
-                          void handleSendMessage();
-                        }
-                      }}
-                      placeholder={
-                        isGeneratingForSelectedSession ? "" : "Message Codex..."
-                      }
-                      rows={2}
-                      style={{ height: `${messageBoxHeight}px` }}
-                      className="w-full min-h-[42px] max-h-40 resize-none bg-zinc-900/70 text-sm text-zinc-200 rounded border border-zinc-800 px-3 py-2 pr-8 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onPointerDown={handleResizeMessageBoxStart}
-                      disabled={isSendingLocked}
-                      aria-label="Resize message box"
-                      title="Drag up or down to resize"
-                      className="absolute top-1 right-1 z-10 flex h-5 w-5 items-center justify-center rounded bg-zinc-900/90 border border-zinc-700/90 text-zinc-300 shadow-sm transition-colors cursor-ns-resize hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-30"
-                    >
-                      <GripVertical className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => {
-                      if (isGeneratingForSelectedSession) {
-                        void handleStopConversation();
-                        return;
-                      }
-                      void handleSendMessage();
-                    }}
-                    disabled={
-                      isGeneratingForSelectedSession
-                        ? stoppingTurn
-                        : sendingMessage || isSendingLocked || !messageDraft.trim()
-                    }
-                    className={`h-10 px-4 text-sm rounded text-zinc-50 disabled:opacity-50 cursor-pointer ${
-                      isGeneratingForSelectedSession
-                        ? "bg-red-700/90 hover:bg-red-700"
-                        : "bg-cyan-700/80 hover:bg-cyan-700"
-                    }`}
-                  >
-                    {isGeneratingForSelectedSession
-                      ? stoppingTurn
-                        ? "Stopping..."
-                        : "Stop"
-                      : sendingMessage
-                        ? "Sending..."
-                        : "Send"}
-                  </button>
-                </div>
+                <MessageComposer
+                  sessionId={selectedSession}
+                  history={messageHistoryBySession[selectedSession] ?? []}
+                  isGeneratingForSelectedSession={
+                    isGeneratingForSelectedSession
+                  }
+                  isSendingLocked={isSendingLocked}
+                  sendingMessage={sendingMessage}
+                  stoppingTurn={stoppingTurn}
+                  messageBoxHeight={messageBoxHeight}
+                  onResizeMessageBoxStart={handleResizeMessageBoxStart}
+                  onSendMessage={handleSendMessage}
+                  onStopConversation={handleStopConversation}
+                />
               </div>
             </div>
           ) : (

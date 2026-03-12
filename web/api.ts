@@ -1,4 +1,5 @@
 import type {
+  ConversationMessage,
   CodexCollaborationModeOption,
   CodexThreadStateResponse,
   CodexModelOption,
@@ -144,5 +145,13 @@ export async function getSessionContext(
 ): Promise<CodexSessionContextResponse> {
   return requestJson<CodexSessionContextResponse>(
     `/api/sessions/${encodeURIComponent(sessionId)}/context`,
+  );
+}
+
+export async function getConversation(
+  sessionId: string,
+): Promise<ConversationMessage[]> {
+  return requestJson<ConversationMessage[]>(
+    `/api/conversation/${encodeURIComponent(sessionId)}`,
   );
 }

@@ -26,6 +26,7 @@ import xmlLanguage from "highlight.js/lib/languages/xml";
 import yamlLanguage from "highlight.js/lib/languages/yaml";
 import {
   Lightbulb,
+  AlertTriangle,
   Wrench,
   Check,
   X,
@@ -141,6 +142,8 @@ type ProposedPlanParseResult = {
 
 const PROPOSED_PLAN_BLOCK_REGEX =
   /^<proposed_plan>\n([\s\S]*?)\n<\/proposed_plan>([\s\S]*)$/;
+const TURN_ABORTED_BLOCK_REGEX =
+  /^\s*<turn_aborted>\s*([\s\S]*?)\s*<\/turn_aborted>\s*$/i;
 
 function parseProposedPlanBlock(text: string): ProposedPlanParseResult | null {
   const normalized = text.replace(/\r\n/g, "\n");
@@ -158,6 +161,38 @@ function parseProposedPlanBlock(text: string): ProposedPlanParseResult | null {
     planMarkdown,
     trailingMarkdown: match[2].trim(),
   };
+}
+
+function getTurnAbortedDisplayText(
+  content: string | ContentBlock[] | undefined,
+): string | null {
+  if (typeof content === "string") {
+    const sanitized = sanitizeText(content).trim();
+    if (!sanitized) {
+      return null;
+    }
+
+    const match = sanitized.match(TURN_ABORTED_BLOCK_REGEX);
+    if (!match) {
+      return sanitized;
+    }
+
+    const extracted = match[1].trim();
+    return extracted || null;
+  }
+
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block.type === "text" && typeof block.text === "string") {
+        const text = sanitizeText(block.text).trim();
+        if (text) {
+          return text;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 function ProposedPlanRenderer(props: {
@@ -213,6 +248,25 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
   const isUser = message.type === "user";
   const planActionHandler = isUser ? undefined : onPlanAction;
   const content = message.message?.content;
+
+  if (message.type === "turn_aborted") {
+    const turnAbortedText = getTurnAbortedDisplayText(content);
+    if (!turnAbortedText) {
+      return null;
+    }
+
+    return (
+      <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2.5">
+        <div className="inline-flex items-center gap-1.5 rounded-md border border-rose-400/30 bg-rose-500/15 px-2 py-1 text-[11px] text-rose-100/95">
+          <AlertTriangle size={12} className="opacity-80" />
+          <span className="font-medium uppercase tracking-wide">Turn Aborted</span>
+        </div>
+        <div className="mt-2 text-xs leading-relaxed text-rose-100/90">
+          <MarkdownRenderer content={turnAbortedText} />
+        </div>
+      </div>
+    );
+  }
 
   const getTextBlocks = (): ContentBlock[] => {
     if (!content || typeof content === "string") {
@@ -616,6 +670,19 @@ function getPatchLineNumberDisplay(value: number | null): string {
   return value === null ? " " : String(value);
 }
 
+function getPatchPreferredLineNumber(lineNumbers: {
+  oldLine: number | null;
+  newLine: number | null;
+}): number | null {
+  if (lineNumbers.newLine !== null) {
+    return lineNumbers.newLine;
+  }
+  if (lineNumbers.oldLine !== null) {
+    return lineNumbers.oldLine;
+  }
+  return null;
+}
+
 function getPatchLineClass(line: string): string {
   if (line.startsWith("+") && !line.startsWith("+++")) {
     return "bg-emerald-500/14";
@@ -791,10 +858,9 @@ function ApplyPatchInputRenderer(props: {
             return (
               <div key={`${index}:${line}`} className={lineClass}>
                 <span className="inline-block w-[5ch] select-none pr-2 text-right tabular-nums text-zinc-400">
-                  {getPatchLineNumberDisplay(lineNumbers.oldLine)}
-                </span>
-                <span className="inline-block w-[5ch] select-none pr-2 text-right tabular-nums text-zinc-400">
-                  {getPatchLineNumberDisplay(lineNumbers.newLine)}
+                  {getPatchLineNumberDisplay(
+                    getPatchPreferredLineNumber(lineNumbers),
+                  )}
                 </span>
                 <span
                   className={`inline-block w-[1ch] select-none ${getPatchPrefixClass(

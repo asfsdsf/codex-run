@@ -131,7 +131,8 @@ export interface ConversationMessage {
     | "summary"
     | "file-history-snapshot"
     | "reasoning"
-    | "agent_reasoning";
+    | "agent_reasoning"
+    | "turn_aborted";
   uuid?: string;
   parentUuid?: string;
   timestamp?: string;
@@ -201,6 +202,10 @@ interface PendingToolUse {
 
 const TOOL_RESULT_MAX_LENGTH = 200_000;
 const CONTEXT_WINDOW_BASELINE_TOKENS = 12_000;
+const TURN_ABORTED_DEFAULT_TEXT =
+  "The user interrupted the previous turn on purpose. Any running unified exec processes were terminated. If any tools/commands were aborted, they may have partially executed; verify current state before retrying.";
+const TURN_ABORTED_TAG_REGEX =
+  /^\s*<turn_aborted>\s*([\s\S]*?)\s*<\/turn_aborted>\s*$/i;
 
 let codexDir = join(homedir(), ".codex");
 let codexHistoryPath = join(codexDir, "history.jsonl");
@@ -592,6 +597,22 @@ function createReasoningMessage(
   };
 }
 
+function createTurnAbortedMessage(
+  text: string,
+  uuid: string,
+  timestamp?: string,
+): ConversationMessage {
+  return {
+    type: "turn_aborted",
+    uuid,
+    timestamp,
+    message: {
+      role: "assistant",
+      content: text,
+    },
+  };
+}
+
 function createToolMessage(
   toolUse: PendingToolUse,
   uuid: string,
@@ -737,6 +758,21 @@ function normalizeReasoningText(text: string): string {
   return unwrapped.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function normalizeComparableText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function extractTurnAbortedText(text: string): string | null {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const match = normalized.match(TURN_ABORTED_TAG_REGEX);
+  if (!match) {
+    return null;
+  }
+
+  const content = match[1].trim();
+  return content || TURN_ABORTED_DEFAULT_TEXT;
+}
+
 function getReasoningTextFromMessage(
   message: ConversationMessage,
 ): string | null {
@@ -756,6 +792,30 @@ function getReasoningTextFromMessage(
   return typeof block?.text === "string" ? block.text : null;
 }
 
+function getTurnAbortedTextFromMessage(
+  message: ConversationMessage,
+): string | null {
+  if (message.type !== "turn_aborted") {
+    return null;
+  }
+
+  const content = message.message?.content;
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    return trimmed || null;
+  }
+
+  if (Array.isArray(content)) {
+    const textBlock = content.find(
+      (item) => item.type === "text" && typeof item.text === "string",
+    );
+    const text = typeof textBlock?.text === "string" ? textBlock.text.trim() : "";
+    return text || null;
+  }
+
+  return null;
+}
+
 function pushConversationMessage(
   messages: ConversationMessage[],
   message: ConversationMessage,
@@ -771,6 +831,22 @@ function pushConversationMessage(
       text &&
       lastText &&
       normalizeReasoningText(text) === normalizeReasoningText(lastText)
+    ) {
+      return;
+    }
+  }
+
+  if (message.type === "turn_aborted") {
+    const text = getTurnAbortedTextFromMessage(message);
+    const lastMessage = messages[messages.length - 1];
+    const lastText = lastMessage
+      ? getTurnAbortedTextFromMessage(lastMessage)
+      : null;
+
+    if (
+      text &&
+      lastText &&
+      normalizeComparableText(text) === normalizeComparableText(lastText)
     ) {
       return;
     }
@@ -870,6 +946,25 @@ function parseCodexConversation(
     const payloadType = typeof payload.type === "string" ? payload.type : "";
 
     if (record.type === "event_msg") {
+      if (payloadType === "turn_aborted") {
+        const reason =
+          typeof payload.reason === "string" ? payload.reason.trim() : "";
+        const text =
+          reason === "interrupted" || !reason
+            ? TURN_ABORTED_DEFAULT_TEXT
+            : `Turn aborted (${reason}). ${TURN_ABORTED_DEFAULT_TEXT}`;
+
+        pushConversationMessage(
+          messages,
+          createTurnAbortedMessage(
+            text,
+            `${offset}:turn-aborted-event:${messages.length}`,
+            timestamp,
+          ),
+        );
+        continue;
+      }
+
       if (payloadType !== "agent_reasoning") {
         continue;
       }
@@ -903,6 +998,20 @@ function parseCodexConversation(
 
       const text = extractTextFromPayloadContent(payload.content);
       if (!text) {
+        continue;
+      }
+
+      const turnAbortedText =
+        role === "user" ? extractTurnAbortedText(text) : null;
+      if (turnAbortedText) {
+        pushConversationMessage(
+          messages,
+          createTurnAbortedMessage(
+            turnAbortedText,
+            `${offset}:turn-aborted-message:${messages.length}`,
+            timestamp,
+          ),
+        );
         continue;
       }
 
@@ -1025,6 +1134,9 @@ async function getFirstUserMessageSnippet(filePath: string): Promise<string> {
       crlfDelay: Infinity,
     });
 
+    let firstMessageRole: "user" | "assistant" | null = null;
+    let firstUserText: string | null = null;
+
     for await (const line of rl) {
       if (!line.trim()) {
         continue;
@@ -1049,7 +1161,12 @@ async function getFirstUserMessageSnippet(filePath: string): Promise<string> {
       }
 
       const payload = record.payload as Record<string, unknown>;
-      if (payload.type !== "message" || payload.role !== "user") {
+      if (payload.type !== "message") {
+        continue;
+      }
+
+      const role = payload.role;
+      if (role !== "user" && role !== "assistant") {
         continue;
       }
 
@@ -1058,7 +1175,32 @@ async function getFirstUserMessageSnippet(filePath: string): Promise<string> {
         continue;
       }
 
-      return normalizeDisplayText(text);
+      if (role === "user" && extractTurnAbortedText(text)) {
+        continue;
+      }
+
+      if (!firstMessageRole) {
+        firstMessageRole = role;
+        if (role === "user") {
+          firstUserText = text;
+        }
+        continue;
+      }
+
+      if (firstMessageRole === "user" && firstUserText) {
+        if (role === "user") {
+          return normalizeDisplayText(text);
+        }
+        return normalizeDisplayText(firstUserText);
+      }
+
+      if (role === "user" && !firstUserText) {
+        firstUserText = text;
+      }
+    }
+
+    if (firstUserText) {
+      return normalizeDisplayText(firstUserText);
     }
   } catch {
     // Ignore read errors and fallback to default display value below.
@@ -1117,17 +1259,17 @@ export async function getSessions(): Promise<Session[]> {
         }
       }
 
-      let display = historyEntry ? normalizeDisplayText(historyEntry.text) : "";
-      if (!display || display === "(no prompt text)") {
-        const cachedDisplay = sessionDisplayCache.get(sessionId);
-        if (cachedDisplay) {
-          display = cachedDisplay;
-        } else if (filePath) {
-          display = await getFirstUserMessageSnippet(filePath);
-          sessionDisplayCache.set(sessionId, display);
-        } else {
-          display = "(no prompt text)";
-        }
+      let display = "";
+      const cachedDisplay = sessionDisplayCache.get(sessionId);
+      if (cachedDisplay) {
+        display = cachedDisplay;
+      } else if (filePath) {
+        display = await getFirstUserMessageSnippet(filePath);
+        sessionDisplayCache.set(sessionId, display);
+      } else if (historyEntry) {
+        display = normalizeDisplayText(historyEntry.text);
+      } else {
+        display = "(no prompt text)";
       }
 
       const project = meta?.cwd ?? "";
