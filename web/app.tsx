@@ -28,6 +28,7 @@ import SessionView from "./components/session-view";
 import { useEventSource } from "./hooks/use-event-source";
 import {
   createCodexThread,
+  fixDanglingSession,
   getSessionContext,
   getCodexThreadState,
   interruptCodexThread,
@@ -54,6 +55,7 @@ const REASONING_EFFORTS: CodexReasoningEffort[] = [
 
 const DEFAULT_OPTION_VALUE = "__default__";
 const TURN_STATE_POLL_INTERVAL_MS = 1000;
+const FIX_DANGLING_WAIT_THRESHOLD_MS = 8_000;
 const MESSAGE_BOX_MIN_HEIGHT = 42;
 const MESSAGE_BOX_MAX_HEIGHT = 160;
 const MESSAGE_BOX_DEFAULT_HEIGHT = 56;
@@ -86,6 +88,8 @@ interface MessageComposerProps {
   sessionId: string;
   history: string[];
   isGeneratingForSelectedSession: boolean;
+  showFixDangling: boolean;
+  fixingDangling: boolean;
   isSendingLocked: boolean;
   sendingMessage: boolean;
   stoppingTurn: boolean;
@@ -95,6 +99,7 @@ interface MessageComposerProps {
   ) => void;
   onSendMessage: (text: string) => Promise<boolean>;
   onStopConversation: () => Promise<void>;
+  onFixDangling: () => void;
 }
 
 function extractMessageText(message: ConversationMessage): string {
@@ -271,6 +276,8 @@ const MessageComposer = memo(function MessageComposer(
     sessionId,
     history,
     isGeneratingForSelectedSession,
+    showFixDangling,
+    fixingDangling,
     isSendingLocked,
     sendingMessage,
     stoppingTurn,
@@ -278,6 +285,7 @@ const MessageComposer = memo(function MessageComposer(
     onResizeMessageBoxStart,
     onSendMessage,
     onStopConversation,
+    onFixDangling,
   } = props;
   const [draft, setDraft] = useState("");
   const [historyNavigation, setHistoryNavigation] =
@@ -364,6 +372,18 @@ const MessageComposer = memo(function MessageComposer(
           <div className="pointer-events-none absolute inset-0 flex items-start gap-2 px-3 py-2 text-sm text-zinc-300">
             <span className="thinking-dot mt-[0.35rem]" />
             <span className="thinking-label">Working...</span>
+            {showFixDangling && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onFixDangling();
+                  }}
+                disabled={fixingDangling}
+                className="pointer-events-auto rounded border border-amber-600/60 bg-amber-700/20 px-2 py-0.5 text-[11px] text-amber-200 transition-colors hover:bg-amber-700/30 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {fixingDangling ? "Fixing..." : "Fix dangling"}
+              </button>
+            )}
           </div>
         )}
         <textarea
@@ -493,6 +513,12 @@ function App() {
   const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null);
   const [creatingSession, setCreatingSession] = useState(false);
   const [interactionError, setInteractionError] = useState<string | null>(null);
+  const [fixingDangling, setFixingDangling] = useState(false);
+  const [showFixDanglingConfirm, setShowFixDanglingConfirm] = useState(false);
+  const [waitSilenceStartedAt, setWaitSilenceStartedAt] = useState<
+    number | null
+  >(null);
+  const [showFixDangling, setShowFixDangling] = useState(false);
   const [messageBoxHeight, setMessageBoxHeight] = useState(
     MESSAGE_BOX_DEFAULT_HEIGHT,
   );
@@ -1191,6 +1217,87 @@ function App() {
   const isGeneratingForSelectedSession =
     !!selectedSession && pendingTurn?.sessionId === selectedSession;
   const isSendingLocked = isGeneratingForSelectedSession || sendingMessage;
+
+  useEffect(() => {
+    if (!selectedSession || !isGeneratingForSelectedSession) {
+      setWaitSilenceStartedAt(null);
+      setShowFixDangling(false);
+      setShowFixDanglingConfirm(false);
+      setFixingDangling(false);
+      return;
+    }
+
+    setWaitSilenceStartedAt(Date.now());
+    setShowFixDangling(false);
+  }, [selectedSession, isGeneratingForSelectedSession]);
+
+  useEffect(() => {
+    if (!isGeneratingForSelectedSession || waitSilenceStartedAt === null) {
+      return;
+    }
+
+    const maybeShowButton = () => {
+      if (Date.now() - waitSilenceStartedAt >= FIX_DANGLING_WAIT_THRESHOLD_MS) {
+        setShowFixDangling(true);
+      }
+    };
+
+    maybeShowButton();
+    const interval = setInterval(maybeShowButton, 1000);
+    return () => {
+      clearInterval(interval);
+    };
+  }, [isGeneratingForSelectedSession, waitSilenceStartedAt]);
+
+  const handleConversationActivity = useCallback(
+    (sessionId: string) => {
+      if (
+        !selectedSession ||
+        sessionId !== selectedSession ||
+        !isGeneratingForSelectedSession
+      ) {
+        return;
+      }
+
+      setWaitSilenceStartedAt(Date.now());
+      setShowFixDangling(false);
+    },
+    [selectedSession, isGeneratingForSelectedSession],
+  );
+
+  const handleFixDangling = useCallback(() => {
+    if (!selectedSession || fixingDangling) {
+      return;
+    }
+
+    setShowFixDanglingConfirm(true);
+  }, [selectedSession, fixingDangling]);
+
+  const handleConfirmFixDangling = useCallback(async () => {
+    if (!selectedSession || fixingDangling) {
+      return;
+    }
+
+    setShowFixDanglingConfirm(false);
+    setFixingDangling(true);
+    setInteractionError(null);
+    try {
+      await fixDanglingSession(selectedSession);
+      setWaitSilenceStartedAt(Date.now());
+      setShowFixDangling(false);
+      setPendingTurn((current) =>
+        current?.sessionId === selectedSession ? null : current,
+      );
+      waitSuppressSessionsRef.current.delete(selectedSession);
+    } catch (error) {
+      setInteractionError(
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setFixingDangling(false);
+    }
+  }, [selectedSession, fixingDangling]);
+
   const newSessionPlaceholder =
     selectedProject || selectedSessionData?.project || "/path/to/project";
   const contextWindowText =
@@ -1280,6 +1387,46 @@ function App() {
           </div>
         )}
 
+        {showFixDanglingConfirm && selectedSession && (
+          <div className="fixed right-4 bottom-4 z-50 w-[min(30rem,calc(100vw-2rem))] rounded-xl border border-amber-700/60 bg-zinc-900/95 shadow-2xl backdrop-blur">
+            <div className="px-4 py-3">
+              <div className="text-sm font-semibold text-amber-200">
+                Fix dangling turns?
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-zinc-300">
+                Warning: this will modify the session file by appending
+                synthetic ended-turn events.
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-zinc-300">
+                Proceed only if no other Codex instance is interacting with this
+                session.
+              </p>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowFixDanglingConfirm(false);
+                  }}
+                  disabled={fixingDangling}
+                  className="h-8 rounded border border-zinc-700 bg-zinc-800/80 px-3 text-xs text-zinc-200 transition-colors hover:bg-zinc-700/80 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleConfirmFixDangling();
+                  }}
+                  disabled={fixingDangling}
+                  className="h-8 rounded border border-amber-600/70 bg-amber-700/25 px-3 text-xs text-amber-100 transition-colors hover:bg-amber-700/35 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {fixingDangling ? "Fixing..." : "Proceed"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 overflow-hidden">
           {selectedSession ? (
             <div className="h-full flex flex-col">
@@ -1287,6 +1434,7 @@ function App() {
                 <SessionView
                   sessionId={selectedSession}
                   onPlanAction={handlePlanProposalAction}
+                  onConversationActivity={handleConversationActivity}
                 />
               </div>
 
@@ -1367,6 +1515,10 @@ function App() {
                   isGeneratingForSelectedSession={
                     isGeneratingForSelectedSession
                   }
+                  showFixDangling={
+                    isGeneratingForSelectedSession && showFixDangling
+                  }
+                  fixingDangling={fixingDangling}
                   isSendingLocked={isSendingLocked}
                   sendingMessage={sendingMessage}
                   stoppingTurn={stoppingTurn}
@@ -1374,6 +1526,7 @@ function App() {
                   onResizeMessageBoxStart={handleResizeMessageBoxStart}
                   onSendMessage={handleSendMessage}
                   onStopConversation={handleStopConversation}
+                  onFixDangling={handleFixDangling}
                 />
               </div>
             </div>

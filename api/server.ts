@@ -13,6 +13,7 @@ import {
   getSessionContext,
   getConversation,
   getConversationStream,
+  fixDanglingTurns,
   invalidateHistoryCache,
   addToFileIndex,
   type CodexThreadStateResponse,
@@ -345,6 +346,30 @@ export function createServer(options: ServerOptions) {
       return c.json(
         {
           error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
+  app.post("/api/sessions/:id/fix-dangling", async (c) => {
+    const sessionId = c.req.param("id")?.trim();
+    if (!sessionId) {
+      return c.json({ error: "session id is required" }, 400);
+    }
+
+    try {
+      const result = await fixDanglingTurns(sessionId);
+      return c.json(result);
+    } catch (error) {
+      const message = toErrorMessage(error);
+      if (message.toLowerCase().includes("session file not found")) {
+        return c.json({ error: message }, 404);
+      }
+
+      return c.json(
+        {
+          error: message,
         },
         responseStatusForError(error),
       );

@@ -4,6 +4,7 @@ import type {
   CodexThreadStateResponse,
   CodexModelOption,
   CodexSessionContextResponse,
+  FixDanglingSessionResponse,
   CreateCodexThreadRequest,
   CreateCodexThreadResponse,
   CodexUserInputRequest,
@@ -145,6 +146,17 @@ export async function getSessionContext(
 ): Promise<CodexSessionContextResponse> {
   return requestJson<CodexSessionContextResponse>(
     `/api/sessions/${encodeURIComponent(sessionId)}/context`,
+  );
+}
+
+export async function fixDanglingSession(
+  sessionId: string,
+): Promise<FixDanglingSessionResponse> {
+  return requestJson<FixDanglingSessionResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/fix-dangling`,
+    {
+      method: "POST",
+    },
   );
 }
 

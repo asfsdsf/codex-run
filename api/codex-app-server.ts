@@ -1,4 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
@@ -1169,12 +1173,29 @@ function resolveCodexExecutablePath(): string {
     return envPath;
   }
 
+  if (isCommandAvailable("codex")) {
+    return "codex";
+  }
+
   const desktopPath = "/Applications/Codex.app/Contents/Resources/codex";
   if (existsSync(desktopPath)) {
     return desktopPath;
   }
 
   return "codex";
+}
+
+function isCommandAvailable(command: string): boolean {
+  const result = spawnSync(command, ["--version"], {
+    stdio: "ignore",
+  });
+
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    return code !== "ENOENT";
+  }
+
+  return result.status === 0;
 }
 
 let client: CodexAppServerClient | null = null;

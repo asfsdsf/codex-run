@@ -20,6 +20,7 @@ const USER_INPUT_POLL_INTERVAL_MS = 1200;
 interface SessionViewProps {
   sessionId: string;
   onPlanAction?: (sessionId: string, action: "implement" | "stay") => void;
+  onConversationActivity?: (sessionId: string) => void;
 }
 
 interface ConversationStreamPayload {
@@ -144,7 +145,7 @@ function messageUsesUserInputState(message: ConversationMessage): boolean {
 }
 
 const SessionView = memo(function SessionView(props: SessionViewProps) {
-  const { sessionId, onPlanAction } = props;
+  const { sessionId, onPlanAction, onConversationActivity } = props;
 
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [pendingUserInputRequests, setPendingUserInputRequests] = useState<
@@ -425,6 +426,22 @@ const SessionView = memo(function SessionView(props: SessionViewProps) {
     },
     [onPlanAction, sessionId],
   );
+
+  const lastVisibleMessagesCountRef = useRef(0);
+
+  useEffect(() => {
+    const previousCount = lastVisibleMessagesCountRef.current;
+    const currentCount = visibleMessages.length;
+    lastVisibleMessagesCountRef.current = currentCount;
+
+    if (currentCount > previousCount) {
+      onConversationActivity?.(sessionId);
+    }
+  }, [visibleMessages.length, onConversationActivity, sessionId]);
+
+  useEffect(() => {
+    lastVisibleMessagesCountRef.current = 0;
+  }, [sessionId]);
 
   if (loading) {
     return (
