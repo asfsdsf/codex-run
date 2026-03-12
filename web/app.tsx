@@ -1,10 +1,17 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type {
   Session,
   CodexModelOption,
   CodexReasoningEffort,
 } from "@codex-run/api";
-import { PanelLeft, Copy, Check } from "lucide-react";
+import { PanelLeft, Copy, Check, GripVertical } from "lucide-react";
 import { formatTime } from "./utils";
 import SessionList from "./components/session-list";
 import SessionView from "./components/session-view";
@@ -34,10 +41,18 @@ const REASONING_EFFORTS: CodexReasoningEffort[] = [
 
 const DEFAULT_OPTION_VALUE = "__default__";
 const TURN_STATE_POLL_INTERVAL_MS = 1000;
+const MESSAGE_BOX_MIN_HEIGHT = 42;
+const MESSAGE_BOX_MAX_HEIGHT = 160;
+const MESSAGE_BOX_DEFAULT_HEIGHT = 56;
 
 interface PendingTurn {
   sessionId: string;
   turnId: string | null;
+}
+
+interface ResizeState {
+  startY: number;
+  startHeight: number;
 }
 
 function SessionHeader(props: SessionHeaderProps) {
@@ -96,7 +111,58 @@ function App() {
   const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null);
   const [creatingSession, setCreatingSession] = useState(false);
   const [interactionError, setInteractionError] = useState<string | null>(null);
+  const [messageBoxHeight, setMessageBoxHeight] = useState(
+    MESSAGE_BOX_DEFAULT_HEIGHT,
+  );
   const waitSuppressSessionsRef = useRef<Set<string>>(new Set());
+  const resizeStateRef = useRef<ResizeState | null>(null);
+
+  const handleResizeMessageBoxMove = useCallback((event: PointerEvent) => {
+    const state = resizeStateRef.current;
+    if (!state) {
+      return;
+    }
+
+    event.preventDefault();
+    const delta = state.startY - event.clientY;
+    const nextHeight = Math.max(
+      MESSAGE_BOX_MIN_HEIGHT,
+      Math.min(MESSAGE_BOX_MAX_HEIGHT, state.startHeight + delta),
+    );
+    setMessageBoxHeight(nextHeight);
+  }, []);
+
+  const stopResizeMessageBox = useCallback(() => {
+    resizeStateRef.current = null;
+    window.removeEventListener("pointermove", handleResizeMessageBoxMove);
+    window.removeEventListener("pointerup", stopResizeMessageBox);
+    window.removeEventListener("pointercancel", stopResizeMessageBox);
+  }, [handleResizeMessageBoxMove]);
+
+  const handleResizeMessageBoxStart = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      event.preventDefault();
+      resizeStateRef.current = {
+        startY: event.clientY,
+        startHeight: messageBoxHeight,
+      };
+      window.addEventListener("pointermove", handleResizeMessageBoxMove);
+      window.addEventListener("pointerup", stopResizeMessageBox);
+      window.addEventListener("pointercancel", stopResizeMessageBox);
+    },
+    [handleResizeMessageBoxMove, messageBoxHeight, stopResizeMessageBox],
+  );
+
+  useEffect(
+    () => () => {
+      stopResizeMessageBox();
+    },
+    [stopResizeMessageBox],
+  );
 
   const handleCopyResumeCommand = useCallback(
     (sessionId: string, projectPath: string) => {
@@ -497,6 +563,8 @@ function App() {
   const isGeneratingForSelectedSession =
     !!selectedSession && pendingTurn?.sessionId === selectedSession;
   const isSendingLocked = isGeneratingForSelectedSession || sendingMessage;
+  const newSessionPlaceholder =
+    selectedProject || selectedSessionData?.project || "/path/to/project";
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-100">
@@ -527,7 +595,7 @@ function App() {
                 type="text"
                 value={newSessionCwd}
                 onChange={(event) => setNewSessionCwd(event.target.value)}
-                placeholder="/path/to/project"
+                placeholder={newSessionPlaceholder}
                 className="flex-1 h-9 bg-zinc-900/70 text-zinc-200 text-xs rounded border border-zinc-800 px-2.5 focus:outline-none"
               />
               <button
@@ -653,8 +721,19 @@ function App() {
                         isGeneratingForSelectedSession ? "" : "Message Codex..."
                       }
                       rows={2}
-                      className="w-full min-h-[42px] max-h-40 resize-y bg-zinc-900/70 text-sm text-zinc-200 rounded border border-zinc-800 px-3 py-2 focus:outline-none"
+                      style={{ height: `${messageBoxHeight}px` }}
+                      className="w-full min-h-[42px] max-h-40 resize-none bg-zinc-900/70 text-sm text-zinc-200 rounded border border-zinc-800 px-3 py-2 pr-8 focus:outline-none"
                     />
+                    <button
+                      type="button"
+                      onPointerDown={handleResizeMessageBoxStart}
+                      disabled={isSendingLocked}
+                      aria-label="Resize message box"
+                      title="Drag up or down to resize"
+                      className="absolute top-1 right-1 z-10 flex h-5 w-5 items-center justify-center rounded bg-zinc-900/90 border border-zinc-700/90 text-zinc-300 shadow-sm transition-colors cursor-ns-resize hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      <GripVertical className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                   <button
                     onClick={() => {

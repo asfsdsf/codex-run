@@ -31,6 +31,7 @@ import {
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, existsSync } from "fs";
+import { stat } from "fs/promises";
 import open from "open";
 import {
   CodexAppServerRpcError,
@@ -309,6 +310,37 @@ export function createServer(options: ServerOptions) {
           },
           400,
         );
+      }
+
+      try {
+        const cwdStats = await stat(cwd);
+        if (!cwdStats.isDirectory()) {
+          return c.json(
+            {
+              error: `Project path is not a directory: ${cwd}`,
+            },
+            400,
+          );
+        }
+      } catch (error) {
+        const errorCode =
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          typeof error.code === "string"
+            ? error.code
+            : null;
+
+        if (errorCode === "ENOENT") {
+          return c.json(
+            {
+              error: `Project path does not exist: ${cwd}`,
+            },
+            400,
+          );
+        }
+
+        throw error;
       }
 
       const model = parseOptionalString(body.model);
