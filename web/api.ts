@@ -1,9 +1,12 @@
 import type {
+  CodexCollaborationModeOption,
   CodexThreadStateResponse,
   CodexModelOption,
   CodexSessionContextResponse,
   CreateCodexThreadRequest,
   CreateCodexThreadResponse,
+  CodexUserInputRequest,
+  CodexUserInputResponsePayload,
   SendCodexMessageRequest,
   SendCodexMessageResponse,
 } from "@codex-run/api";
@@ -16,8 +19,16 @@ interface CodexModelsResponse {
   models: CodexModelOption[];
 }
 
+interface CodexCollaborationModesResponse {
+  modes: CodexCollaborationModeOption[];
+}
+
 interface InterruptCodexThreadResponse {
   ok: boolean;
+}
+
+interface CodexUserInputRequestsResponse {
+  requests: CodexUserInputRequest[];
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -38,6 +49,15 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 export async function listCodexModels(): Promise<CodexModelOption[]> {
   const payload = await requestJson<CodexModelsResponse>("/api/codex/models");
   return Array.isArray(payload.models) ? payload.models : [];
+}
+
+export async function listCodexCollaborationModes(): Promise<
+  CodexCollaborationModeOption[]
+> {
+  const payload = await requestJson<CodexCollaborationModesResponse>(
+    "/api/codex/collaboration-modes",
+  );
+  return Array.isArray(payload.modes) ? payload.modes : [];
 }
 
 export async function createCodexThread(
@@ -89,6 +109,32 @@ export async function interruptCodexThread(
     `/api/codex/threads/${encodeURIComponent(threadId)}/interrupt`,
     {
       method: "POST",
+    },
+  );
+}
+
+export async function listCodexUserInputRequests(
+  threadId: string,
+): Promise<CodexUserInputRequest[]> {
+  const payload = await requestJson<CodexUserInputRequestsResponse>(
+    `/api/codex/threads/${encodeURIComponent(threadId)}/requests/user-input`,
+  );
+  return Array.isArray(payload.requests) ? payload.requests : [];
+}
+
+export async function respondCodexUserInputRequest(
+  threadId: string,
+  requestId: string,
+  response: CodexUserInputResponsePayload,
+): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>(
+    `/api/codex/threads/${encodeURIComponent(threadId)}/requests/user-input/${encodeURIComponent(requestId)}/respond`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(response),
     },
   );
 }

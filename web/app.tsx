@@ -8,10 +8,18 @@ import {
 } from "react";
 import type {
   Session,
+  CodexCollaborationModeOption,
   CodexModelOption,
   CodexReasoningEffort,
 } from "@codex-run/api";
-import { PanelLeft, Copy, Check, GripVertical } from "lucide-react";
+import {
+  PanelLeft,
+  Copy,
+  Check,
+  GripVertical,
+  Circle,
+  CircleDot,
+} from "lucide-react";
 import { formatTime } from "./utils";
 import SessionList from "./components/session-list";
 import SessionView from "./components/session-view";
@@ -21,6 +29,7 @@ import {
   getSessionContext,
   getCodexThreadState,
   interruptCodexThread,
+  listCodexCollaborationModes,
   listCodexModels,
   sendCodexMessage,
 } from "./api";
@@ -45,10 +54,14 @@ const TURN_STATE_POLL_INTERVAL_MS = 1000;
 const MESSAGE_BOX_MIN_HEIGHT = 42;
 const MESSAGE_BOX_MAX_HEIGHT = 160;
 const MESSAGE_BOX_DEFAULT_HEIGHT = 56;
+const PLAN_IMPLEMENTATION_MESSAGE = "Implement the plan.";
+const SESSION_MODE_STORAGE_KEY = "codex-run:session-plan-mode:v1";
 const TOKEN_COUNT_FORMATTER = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
 });
+
+type CollaborationModeKey = "default" | "plan";
 
 interface PendingTurn {
   sessionId: string;
@@ -58,6 +71,48 @@ interface PendingTurn {
 interface ResizeState {
   startY: number;
   startHeight: number;
+}
+
+function loadSessionModeMap(): Record<string, CollaborationModeKey> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_MODE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const result: Record<string, CollaborationModeKey> = {};
+    for (const [sessionId, modeValue] of Object.entries(parsed)) {
+      if (modeValue === "default" || modeValue === "plan") {
+        result[sessionId] = modeValue;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistSessionModeMap(
+  value: Record<string, CollaborationModeKey>,
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(SESSION_MODE_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Ignore storage write errors (private mode, quota, etc.)
+  }
 }
 
 function SessionHeader(props: SessionHeaderProps) {
@@ -107,6 +162,14 @@ function App() {
   const [copied, setCopied] = useState(false);
 
   const [models, setModels] = useState<CodexModelOption[]>([]);
+  const [collaborationModes, setCollaborationModes] = useState<
+    CodexCollaborationModeOption[]
+  >([]);
+  const [sessionModeById, setSessionModeById] = useState<
+    Record<string, CollaborationModeKey>
+  >(() => loadSessionModeMap());
+  const [selectedModeKey, setSelectedModeKey] =
+    useState<CollaborationModeKey>("default");
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedEffort, setSelectedEffort] = useState<CodexReasoningEffort | "">("");
   const [messageDraft, setMessageDraft] = useState("");
@@ -206,18 +269,19 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
-    listCodexModels()
-      .then((data) => {
+    Promise.all([listCodexModels(), listCodexCollaborationModes()])
+      .then(([modelsData, collaborationModesData]) => {
         if (cancelled) {
           return;
         }
 
-        setModels(data);
+        setModels(modelsData);
+        setCollaborationModes(collaborationModesData);
 
         if (!selectedModelId) {
           const defaultModel =
-            data.find((model) => model.isDefault && !model.hidden) ??
-            data.find((model) => !model.hidden) ??
+            modelsData.find((model) => model.isDefault && !model.hidden) ??
+            modelsData.find((model) => !model.hidden) ??
             null;
 
           if (defaultModel) {
@@ -321,6 +385,50 @@ function App() {
     () => models.filter((model) => !model.hidden),
     [models],
   );
+  const hasPlanMode = useMemo(
+    () =>
+      collaborationModes.length === 0 ||
+      collaborationModes.some((mode) => mode.mode === "plan"),
+    [collaborationModes],
+  );
+  const isPlanModeEnabled = selectedModeKey === "plan";
+
+  const getSessionMode = useCallback(
+    (sessionId: string | null): CollaborationModeKey => {
+      if (!sessionId) {
+        return "default";
+      }
+
+      const saved = sessionModeById[sessionId];
+      if (saved === "plan" && !hasPlanMode) {
+        return "default";
+      }
+
+      return saved ?? "default";
+    },
+    [sessionModeById, hasPlanMode],
+  );
+
+  const setSessionMode = useCallback(
+    (sessionId: string, mode: CollaborationModeKey) => {
+      const normalizedMode = mode === "plan" && !hasPlanMode ? "default" : mode;
+
+      setSessionModeById((current) => {
+        if (current[sessionId] === normalizedMode) {
+          return current;
+        }
+        return {
+          ...current,
+          [sessionId]: normalizedMode,
+        };
+      });
+
+      if (selectedSession === sessionId) {
+        setSelectedModeKey(normalizedMode);
+      }
+    },
+    [hasPlanMode, selectedSession],
+  );
 
   const effortOptions = useMemo(() => {
     const selectedModel =
@@ -356,6 +464,24 @@ function App() {
       setSelectedEffort("");
     }
   }, [effortOptions, selectedEffort]);
+
+  useEffect(() => {
+    if (!hasPlanMode) {
+      if (selectedSession && selectedModeKey === "plan") {
+        setSessionMode(selectedSession, "default");
+      } else if (!selectedSession && selectedModeKey === "plan") {
+        setSelectedModeKey("default");
+      }
+    }
+  }, [hasPlanMode, selectedModeKey, selectedSession, setSessionMode]);
+
+  useEffect(() => {
+    persistSessionModeMap(sessionModeById);
+  }, [sessionModeById]);
+
+  useEffect(() => {
+    setSelectedModeKey(getSessionMode(selectedSession));
+  }, [getSessionMode, selectedSession]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
     setSelectedSession(sessionId);
@@ -399,53 +525,119 @@ function App() {
     selectedEffort,
   ]);
 
+  const sendMessageText = useCallback(
+    async (
+      text: string,
+      options?: {
+        clearDraft?: boolean;
+        modeOverride?: CollaborationModeKey;
+      },
+    ) => {
+      if (
+        !selectedSession ||
+        sendingMessage ||
+        pendingTurn?.sessionId === selectedSession
+      ) {
+        return;
+      }
+
+      const normalizedText = text.trim();
+      if (!normalizedText) {
+        return;
+      }
+
+      const requestedMode = options?.modeOverride ?? selectedModeKey;
+      const modeToUse =
+        requestedMode === "plan" && !hasPlanMode ? "default" : requestedMode;
+      const sessionId = selectedSession;
+
+      setSendingMessage(true);
+      setInteractionError(null);
+      waitSuppressSessionsRef.current.delete(selectedSession);
+
+      try {
+        const response = await sendCodexMessage(selectedSession, {
+          text: normalizedText,
+          ...(selectedSessionData?.project
+            ? { cwd: selectedSessionData.project }
+            : {}),
+          ...(selectedModelId ? { model: selectedModelId } : {}),
+          ...(selectedEffort ? { effort: selectedEffort } : {}),
+          collaborationMode: {
+            mode: modeToUse,
+            settings: {
+              model: selectedModelId || null,
+              reasoningEffort: selectedEffort || null,
+              developerInstructions: null,
+            },
+          },
+        });
+
+        if (options?.clearDraft) {
+          setMessageDraft("");
+        }
+
+        setSessionMode(sessionId, modeToUse);
+        setPendingTurn({
+          sessionId,
+          turnId: response.turnId,
+        });
+      } catch (error) {
+        setInteractionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setSendingMessage(false);
+      }
+    },
+    [
+      selectedSession,
+      sendingMessage,
+      pendingTurn?.sessionId,
+      selectedModeKey,
+      hasPlanMode,
+      selectedSessionData?.project,
+      selectedModelId,
+      selectedEffort,
+      setSessionMode,
+    ],
+  );
+
   const handleSendMessage = useCallback(async () => {
-    if (
-      !selectedSession ||
-      sendingMessage ||
-      pendingTurn?.sessionId === selectedSession
-    ) {
+    await sendMessageText(messageDraft, { clearDraft: true });
+  }, [messageDraft, sendMessageText]);
+
+  const handlePlanProposalAction = useCallback(
+    async (sessionId: string, action: "implement" | "stay") => {
+      if (!selectedSession || sessionId !== selectedSession) {
+        return;
+      }
+
+      if (action === "stay") {
+        setSessionMode(sessionId, hasPlanMode ? "plan" : "default");
+        return;
+      }
+
+      await sendMessageText(PLAN_IMPLEMENTATION_MESSAGE, {
+        modeOverride: "default",
+      });
+    },
+    [selectedSession, hasPlanMode, sendMessageText, setSessionMode],
+  );
+
+  const handleTogglePlanMode = useCallback(() => {
+    if (!hasPlanMode) {
       return;
     }
 
-    const text = messageDraft.trim();
-    if (!text) {
+    if (!selectedSession) {
+      setSelectedModeKey((current) => (current === "plan" ? "default" : "plan"));
       return;
     }
 
-    setSendingMessage(true);
-    setInteractionError(null);
-    waitSuppressSessionsRef.current.delete(selectedSession);
-
-    try {
-      const response = await sendCodexMessage(selectedSession, {
-        text,
-        ...(selectedSessionData?.project
-          ? { cwd: selectedSessionData.project }
-          : {}),
-        ...(selectedModelId ? { model: selectedModelId } : {}),
-        ...(selectedEffort ? { effort: selectedEffort } : {}),
-      });
-
-      setMessageDraft("");
-      setPendingTurn({
-        sessionId: selectedSession,
-        turnId: response.turnId,
-      });
-    } catch (error) {
-      setInteractionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSendingMessage(false);
-    }
-  }, [
-    selectedSession,
-    sendingMessage,
-    messageDraft,
-    pendingTurn?.sessionId,
-    selectedSessionData?.project,
-    selectedModelId,
-    selectedEffort,
-  ]);
+    setSessionMode(
+      selectedSession,
+      selectedModeKey === "plan" ? "default" : "plan",
+    );
+  }, [hasPlanMode, selectedModeKey, selectedSession, setSessionMode]);
 
   const handleStopConversation = useCallback(async () => {
     if (!selectedSession || pendingTurn?.sessionId !== selectedSession || stoppingTurn) {
@@ -697,11 +889,39 @@ function App() {
           {selectedSession ? (
             <div className="h-full flex flex-col">
               <div className="flex-1 overflow-hidden">
-                <SessionView sessionId={selectedSession} />
+                <SessionView
+                  sessionId={selectedSession}
+                  onPlanAction={handlePlanProposalAction}
+                />
               </div>
 
               <div className="border-t border-zinc-800/60 bg-zinc-950 p-3 space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTogglePlanMode}
+                    disabled={!hasPlanMode}
+                    className={`h-9 px-3 text-xs rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                      isPlanModeEnabled
+                        ? "border-blue-500/50 bg-blue-500/20 text-blue-200 hover:bg-blue-500/25"
+                        : "border-zinc-800 bg-zinc-900/70 text-zinc-300 hover:bg-zinc-800/80"
+                    }`}
+                    title={
+                      hasPlanMode
+                        ? "Toggle Plan mode"
+                        : "Plan mode is unavailable for this session"
+                    }
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      {isPlanModeEnabled ? (
+                        <CircleDot className="h-3.5 w-3.5" />
+                      ) : (
+                        <Circle className="h-3.5 w-3.5" />
+                      )}
+                      Plan
+                    </span>
+                  </button>
+
                   <select
                     value={selectedModelId || DEFAULT_OPTION_VALUE}
                     onChange={(event) => {

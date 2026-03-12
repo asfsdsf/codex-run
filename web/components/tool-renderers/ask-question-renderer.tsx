@@ -6,6 +6,7 @@ interface QuestionOption {
 }
 
 interface Question {
+  id: string;
   header: string;
   question: string;
   options: QuestionOption[];
@@ -13,6 +14,7 @@ interface Question {
 }
 
 interface AskQuestionInput {
+  requestId?: string;
   questions: Question[];
 }
 
@@ -20,10 +22,20 @@ interface AskQuestionRendererProps {
   input: AskQuestionInput;
   embedded?: boolean;
   hideHeader?: boolean;
+  selectedAnswers?: Record<string, string>;
+  onSelectOption?: (questionId: string, optionLabel: string) => void;
+  submitting?: boolean;
 }
 
 export function AskQuestionRenderer(props: AskQuestionRendererProps) {
-  const { input, embedded = false, hideHeader = false } = props;
+  const {
+    input,
+    embedded = false,
+    hideHeader = false,
+    selectedAnswers,
+    onSelectOption,
+    submitting = false,
+  } = props;
 
   if (!input || !input.questions || input.questions.length === 0) {
     return null;
@@ -54,18 +66,35 @@ export function AskQuestionRenderer(props: AskQuestionRendererProps) {
             {question.options && question.options.length > 0 && (
               <div className="space-y-2">
                 {question.options.map((option, oIndex) => {
-                  const Icon = question.multiSelect ? CheckSquare : Square;
+                  const selected = selectedAnswers?.[question.id] === option.label;
+                  const Icon =
+                    question.multiSelect || selected ? CheckSquare : Square;
+                  const canSelect = !!onSelectOption && !submitting;
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={oIndex}
-                      className="flex items-start gap-2 px-2 py-1.5 rounded bg-zinc-800/40 border border-zinc-700/30"
+                      disabled={!canSelect}
+                      onClick={() => {
+                        if (!canSelect) {
+                          return;
+                        }
+                        onSelectOption(question.id, option.label);
+                      }}
+                      className={`w-full text-left flex items-start gap-2 px-2 py-1.5 rounded border transition-colors ${
+                        selected
+                          ? "bg-violet-500/12 border-violet-400/45"
+                          : "bg-zinc-800/40 border-zinc-700/30"
+                      } ${canSelect ? "cursor-pointer hover:bg-zinc-800/70" : "cursor-default opacity-80"}`}
                     >
                       <Icon
                         size={14}
-                        className="text-violet-400/70 mt-0.5 flex-shrink-0"
+                        className={`mt-0.5 flex-shrink-0 ${selected ? "text-violet-300" : "text-violet-400/70"}`}
                       />
                       <div className="min-w-0">
-                        <div className="text-xs font-medium text-zinc-200">
+                        <div
+                          className={`text-xs font-medium ${selected ? "text-violet-100" : "text-zinc-200"}`}
+                        >
                           {option.label}
                         </div>
                         {option.description && (
@@ -74,7 +103,7 @@ export function AskQuestionRenderer(props: AskQuestionRendererProps) {
                           </div>
                         )}
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>

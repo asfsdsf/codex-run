@@ -16,6 +16,8 @@ import {
   invalidateHistoryCache,
   addToFileIndex,
   type CodexThreadStateResponse,
+  type CodexUserInputRequest,
+  type CodexUserInputResponsePayload,
   type CreateCodexThreadRequest,
   type SendCodexMessageRequest,
   type SendCodexMessageResponse,
@@ -40,6 +42,7 @@ import {
   closeCodexAppServerClient,
   getCodexAppServerClient,
   isCodexReasoningEffort,
+  type CodexCollaborationModeInput,
   type CodexReasoningEffort,
 } from "./codex-app-server";
 
@@ -90,6 +93,98 @@ function parseOptionalEffort(
   return isCodexReasoningEffort(value) ? value : undefined;
 }
 
+function parseOptionalCollaborationMode(
+  value: unknown,
+): CodexCollaborationModeInput | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const mode = typeof record.mode === "string" ? record.mode.trim() : "";
+  if (!mode) {
+    return undefined;
+  }
+
+  const settingsValue = record.settings;
+  if (settingsValue === undefined || settingsValue === null) {
+    return { mode };
+  }
+
+  if (
+    typeof settingsValue !== "object" ||
+    Array.isArray(settingsValue) ||
+    !settingsValue
+  ) {
+    return undefined;
+  }
+
+  const settingsRecord = settingsValue as Record<string, unknown>;
+  const model = parseOptionalString(settingsRecord.model);
+  if (settingsRecord.model !== undefined && model === undefined) {
+    return undefined;
+  }
+
+  const hasReasoningEffortCamel = Object.prototype.hasOwnProperty.call(
+    settingsRecord,
+    "reasoningEffort",
+  );
+  const hasReasoningEffortSnake = Object.prototype.hasOwnProperty.call(
+    settingsRecord,
+    "reasoning_effort",
+  );
+  const hasReasoningEffort =
+    hasReasoningEffortCamel || hasReasoningEffortSnake;
+  const reasoningEffortRaw = hasReasoningEffortCamel
+    ? settingsRecord.reasoningEffort
+    : hasReasoningEffortSnake
+      ? settingsRecord.reasoning_effort
+      : undefined;
+  const reasoningEffort = parseOptionalEffort(reasoningEffortRaw);
+  if (hasReasoningEffort && reasoningEffort === undefined) {
+    return undefined;
+  }
+
+  const hasDeveloperInstructionsCamel = Object.prototype.hasOwnProperty.call(
+    settingsRecord,
+    "developerInstructions",
+  );
+  const hasDeveloperInstructionsSnake = Object.prototype.hasOwnProperty.call(
+    settingsRecord,
+    "developer_instructions",
+  );
+  const hasDeveloperInstructions =
+    hasDeveloperInstructionsCamel || hasDeveloperInstructionsSnake;
+  const developerInstructionsRaw = hasDeveloperInstructionsCamel
+    ? settingsRecord.developerInstructions
+    : hasDeveloperInstructionsSnake
+      ? settingsRecord.developer_instructions
+      : undefined;
+  const developerInstructions = parseOptionalString(developerInstructionsRaw);
+  if (hasDeveloperInstructions && developerInstructions === undefined) {
+    return undefined;
+  }
+
+  return {
+    mode,
+    settings: {
+      ...(settingsRecord.model !== undefined ? { model } : {}),
+      ...(hasReasoningEffort ? { reasoningEffort } : {}),
+      ...(hasDeveloperInstructions
+        ? { developerInstructions }
+        : {}),
+    },
+  };
+}
+
 function responseStatusForError(error: unknown): number {
   if (error instanceof CodexAppServerTransportError) {
     return 503;
@@ -101,6 +196,22 @@ function responseStatusForError(error: unknown): number {
     return 400;
   }
   return 500;
+}
+
+function isThreadStateUnavailableError(error: unknown): boolean {
+  if (!(error instanceof CodexAppServerRpcError)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("thread not found") ||
+    message.includes("thread not loaded") ||
+    message.includes("unknown thread") ||
+    message.includes("not materialized yet") ||
+    message.includes("includeturns is unavailable before first user message") ||
+    message.includes("no rollout found for thread id")
+  );
 }
 
 export interface ServerOptions {
@@ -319,6 +430,20 @@ export function createServer(options: ServerOptions) {
     }
   });
 
+  app.get("/api/codex/collaboration-modes", async (c) => {
+    try {
+      const modes = await getCodexAppServerClient().listCollaborationModes();
+      return c.json({ modes });
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
   app.post("/api/codex/threads", async (c) => {
     try {
       const body = (await c.req.json()) as Partial<CreateCodexThreadRequest>;
@@ -418,12 +543,26 @@ export function createServer(options: ServerOptions) {
         return c.json({ error: "effort is invalid" }, 400);
       }
 
+      const collaborationMode = parseOptionalCollaborationMode(
+        body.collaborationMode,
+      );
+      if (
+        body.collaborationMode !== undefined &&
+        collaborationMode === undefined
+      ) {
+        return c.json(
+          { error: "collaborationMode is invalid" },
+          400,
+        );
+      }
+
       const result = await getCodexAppServerClient().sendMessage({
         threadId,
         text,
         ...(cwd ? { cwd } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(effort !== undefined ? { effort } : {}),
+        ...(collaborationMode !== undefined ? { collaborationMode } : {}),
       });
 
       const response: SendCodexMessageResponse = {
@@ -467,6 +606,17 @@ export function createServer(options: ServerOptions) {
       };
       return c.json(response);
     } catch (error) {
+      if (isThreadStateUnavailableError(error)) {
+        const response: CodexThreadStateResponse = {
+          threadId,
+          activeTurnId: null,
+          isGenerating: false,
+          requestedTurnId,
+          requestedTurnStatus: null,
+        };
+        return c.json(response);
+      }
+
       return c.json(
         {
           error: toErrorMessage(error),
@@ -489,6 +639,81 @@ export function createServer(options: ServerOptions) {
       return c.json(
         {
           error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
+  app.get("/api/codex/threads/:id/requests/user-input", async (c) => {
+    const threadId = c.req.param("id")?.trim();
+    if (!threadId) {
+      return c.json({ error: "thread id is required" }, 400);
+    }
+
+    try {
+      const requests = getCodexAppServerClient().listPendingUserInputRequests(
+        threadId,
+      );
+      return c.json({ requests: requests as CodexUserInputRequest[] });
+    } catch (error) {
+      return c.json(
+        {
+          error: toErrorMessage(error),
+        },
+        responseStatusForError(error),
+      );
+    }
+  });
+
+  app.post("/api/codex/threads/:id/requests/user-input/:requestId/respond", async (c) => {
+    const threadId = c.req.param("id")?.trim();
+    if (!threadId) {
+      return c.json({ error: "thread id is required" }, 400);
+    }
+
+    const requestId = c.req.param("requestId")?.trim();
+    if (!requestId) {
+      return c.json({ error: "request id is required" }, 400);
+    }
+
+    try {
+      const body = (await c.req.json()) as Partial<CodexUserInputResponsePayload>;
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        !body.answers ||
+        typeof body.answers !== "object" ||
+        Array.isArray(body.answers)
+      ) {
+        return c.json({ error: "response.answers must be an object" }, 400);
+      }
+
+      const response: CodexUserInputResponsePayload = {
+        answers: body.answers as CodexUserInputResponsePayload["answers"],
+      };
+
+      await getCodexAppServerClient().submitUserInput(
+        threadId,
+        requestId,
+        response,
+      );
+
+      return c.json({ ok: true });
+    } catch (error) {
+      const message = toErrorMessage(error);
+      const lowered = message.toLowerCase();
+      if (lowered.includes("request not found")) {
+        return c.json({ error: message }, 404);
+      }
+      if (lowered.includes("response.answers")) {
+        return c.json({ error: message }, 400);
+      }
+
+      return c.json(
+        {
+          error: message,
         },
         responseStatusForError(error),
       );

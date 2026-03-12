@@ -35,6 +35,25 @@ export interface CodexModelOption {
   supportedReasoningEfforts: CodexReasoningEffort[];
 }
 
+export interface CodexCollaborationModeSettings {
+  model?: string | null;
+  reasoningEffort?: CodexReasoningEffort | null;
+  developerInstructions?: string | null;
+}
+
+export interface CodexCollaborationModeOption {
+  mode: string;
+  name: string;
+  model?: string | null;
+  reasoningEffort?: CodexReasoningEffort | null;
+  developerInstructions?: string | null;
+}
+
+export interface CodexCollaborationModeInput {
+  mode: string;
+  settings?: CodexCollaborationModeSettings;
+}
+
 export interface CreateCodexThreadRequest {
   cwd: string;
   model?: string | null;
@@ -50,6 +69,7 @@ export interface SendCodexMessageRequest {
   cwd?: string;
   model?: string | null;
   effort?: CodexReasoningEffort | null;
+  collaborationMode?: CodexCollaborationModeInput | null;
 }
 
 export interface SendCodexMessageResponse {
@@ -69,6 +89,32 @@ export interface CodexThreadStateResponse {
   isGenerating: boolean;
   requestedTurnId: string | null;
   requestedTurnStatus: CodexTurnStatus | null;
+}
+
+export interface CodexUserInputQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface CodexUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: CodexUserInputQuestionOption[];
+}
+
+export interface CodexUserInputRequest {
+  requestId: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  questions: CodexUserInputQuestion[];
+}
+
+export interface CodexUserInputResponsePayload {
+  answers: Record<string, { answers: string[] }>;
 }
 
 export interface CodexSessionContextResponse {

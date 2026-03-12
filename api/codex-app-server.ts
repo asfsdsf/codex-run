@@ -24,6 +24,25 @@ export interface CodexModelOption {
   supportedReasoningEfforts: CodexReasoningEffort[];
 }
 
+export interface CodexCollaborationModeSettings {
+  model?: string | null;
+  reasoningEffort?: CodexReasoningEffort | null;
+  developerInstructions?: string | null;
+}
+
+export interface CodexCollaborationModeOption {
+  mode: string;
+  name: string;
+  model?: string | null;
+  reasoningEffort?: CodexReasoningEffort | null;
+  developerInstructions?: string | null;
+}
+
+export interface CodexCollaborationModeInput {
+  mode: string;
+  settings?: CodexCollaborationModeSettings;
+}
+
 export interface CreateCodexThreadInput {
   cwd: string;
   model?: string | null;
@@ -36,6 +55,7 @@ export interface SendCodexMessageInput {
   cwd?: string;
   model?: string | null;
   effort?: CodexReasoningEffort | null;
+  collaborationMode?: CodexCollaborationModeInput | null;
 }
 
 export interface SendCodexMessageResult {
@@ -54,6 +74,43 @@ export interface CodexThreadState {
   isGenerating: boolean;
   requestedTurnId: string | null;
   requestedTurnStatus: CodexTurnStatus | null;
+}
+
+type JsonRpcRequestId = string | number;
+
+export interface CodexUserInputQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface CodexUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: CodexUserInputQuestionOption[];
+}
+
+export interface CodexUserInputRequest {
+  requestId: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  questions: CodexUserInputQuestion[];
+}
+
+export interface CodexUserInputResponsePayload {
+  answers: Record<string, { answers: string[] }>;
+}
+
+interface PendingUserInputRequest {
+  requestId: string;
+  rawRequestId: JsonRpcRequestId;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  questions: CodexUserInputQuestion[];
 }
 
 interface AppServerTurnRecord {
@@ -108,6 +165,7 @@ class CodexAppServerClient {
   private initializeInFlight: Promise<void> | null = null;
   private requestId = 0;
   private pending = new Map<number, PendingRequest>();
+  private pendingUserInputRequests = new Map<string, PendingUserInputRequest>();
 
   public constructor(options: CodexAppServerClientOptions = {}) {
     this.executablePath =
@@ -166,6 +224,52 @@ class CodexAppServerClient {
     }
 
     return models;
+  }
+
+  public async listCollaborationModes(): Promise<CodexCollaborationModeOption[]> {
+    const result = await this.request("collaborationMode/list", {});
+    if (!result || typeof result !== "object") {
+      throw new CodexAppServerTransportError(
+        "Invalid collaborationMode/list response from codex app-server",
+      );
+    }
+
+    const data = (result as { data?: unknown }).data;
+    if (!Array.isArray(data)) {
+      throw new CodexAppServerTransportError(
+        "Missing collaboration mode data in codex app-server response",
+      );
+    }
+
+    const modes: CodexCollaborationModeOption[] = [];
+
+    for (const entry of data) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+
+      const record = entry as Record<string, unknown>;
+      const mode = asString(record.mode)?.trim();
+      if (!mode) {
+        continue;
+      }
+
+      const reasoningEffort = toReasoningEffort(
+        record.reasoning_effort ?? record.reasoningEffort,
+      );
+
+      modes.push({
+        mode,
+        name: asString(record.name)?.trim() || mode,
+        model: asNullableString(record.model),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        developerInstructions: asNullableString(
+          record.developer_instructions ?? record.developerInstructions,
+        ),
+      });
+    }
+
+    return modes;
   }
 
   public async createThread(input: CreateCodexThreadInput): Promise<string> {
@@ -243,6 +347,14 @@ class CodexAppServerClient {
 
     if (input.effort) {
       params.effort = input.effort;
+    }
+
+    if (input.collaborationMode === null) {
+      params.collaborationMode = null;
+    } else if (input.collaborationMode !== undefined) {
+      params.collaborationMode = toCollaborationModePayload(
+        input.collaborationMode,
+      );
     }
 
     try {
@@ -349,6 +461,49 @@ class CodexAppServerClient {
     };
   }
 
+  public listPendingUserInputRequests(threadId: string): CodexUserInputRequest[] {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) {
+      throw new Error("threadId is required");
+    }
+
+    return [...this.pendingUserInputRequests.values()]
+      .filter((request) => request.threadId === normalizedThreadId)
+      .map((request) => ({
+        requestId: request.requestId,
+        threadId: request.threadId,
+        turnId: request.turnId,
+        itemId: request.itemId,
+        questions: request.questions,
+      }));
+  }
+
+  public async submitUserInput(
+    threadId: string,
+    requestId: string,
+    response: CodexUserInputResponsePayload,
+  ): Promise<void> {
+    const normalizedThreadId = threadId.trim();
+    if (!normalizedThreadId) {
+      throw new Error("threadId is required");
+    }
+
+    const normalizedRequestId = requestId.trim();
+    if (!normalizedRequestId) {
+      throw new Error("requestId is required");
+    }
+
+    const pendingRequest = this.pendingUserInputRequests.get(normalizedRequestId);
+    if (!pendingRequest || pendingRequest.threadId !== normalizedThreadId) {
+      throw new Error("request not found");
+    }
+
+    validateUserInputResponsePayload(response);
+
+    await this.respondToServerRequest(pendingRequest.rawRequestId, response);
+    this.pendingUserInputRequests.delete(normalizedRequestId);
+  }
+
   private async resumeThread(threadId: string): Promise<void> {
     await this.request("thread/resume", {
       threadId,
@@ -376,6 +531,7 @@ class CodexAppServerClient {
 
   public async close(): Promise<void> {
     this.rejectAll(new CodexAppServerTransportError("app-server closed"));
+    this.pendingUserInputRequests.clear();
 
     this.stdoutReader?.close();
     this.stdoutReader = null;
@@ -558,6 +714,7 @@ class CodexAppServerClient {
 
     const message = parsed as Record<string, unknown>;
     const idValue = message.id;
+    const method = typeof message.method === "string" ? message.method : null;
     const hasResult = Object.prototype.hasOwnProperty.call(message, "result");
     const hasError = Object.prototype.hasOwnProperty.call(message, "error");
 
@@ -566,13 +723,59 @@ class CodexAppServerClient {
       return;
     }
 
+    if (method === "serverRequest/resolved") {
+      this.handleServerRequestResolved(message.params);
+      return;
+    }
+
     if (
-      typeof idValue === "number" &&
-      typeof message.method === "string" &&
+      (typeof idValue === "number" || typeof idValue === "string") &&
+      method &&
       Object.prototype.hasOwnProperty.call(message, "params")
     ) {
-      void this.respondMethodNotFound(idValue, message.method);
+      if (method === "item/tool/requestUserInput") {
+        if (this.handleRequestUserInput(idValue, message.params)) {
+          return;
+        }
+      }
+
+      void this.respondMethodNotFound(idValue, method);
     }
+  }
+
+  private handleRequestUserInput(
+    requestId: JsonRpcRequestId,
+    params: unknown,
+  ): boolean {
+    const normalized = parseRequestUserInputParams(params);
+    if (!normalized) {
+      return false;
+    }
+
+    this.pendingUserInputRequests.set(String(requestId), {
+      requestId: String(requestId),
+      rawRequestId: requestId,
+      threadId: normalized.threadId,
+      turnId: normalized.turnId,
+      itemId: normalized.itemId,
+      questions: normalized.questions,
+    });
+
+    return true;
+  }
+
+  private handleServerRequestResolved(params: unknown): void {
+    if (!params || typeof params !== "object") {
+      return;
+    }
+
+    const record = params as Record<string, unknown>;
+    const requestId = record.requestId;
+    if (typeof requestId !== "string" && typeof requestId !== "number") {
+      return;
+    }
+
+    this.pendingUserInputRequests.delete(String(requestId));
   }
 
   private resolvePendingRequest(
@@ -615,7 +818,7 @@ class CodexAppServerClient {
   }
 
   private async respondMethodNotFound(
-    requestId: number,
+    requestId: JsonRpcRequestId,
     method: string,
   ): Promise<void> {
     const processHandle = this.process;
@@ -634,6 +837,37 @@ class CodexAppServerClient {
 
     await new Promise<void>((resolve) => {
       processHandle.stdin.write(`${JSON.stringify(payload)}\n`, () => {
+        resolve();
+      });
+    });
+  }
+
+  private async respondToServerRequest(
+    requestId: JsonRpcRequestId,
+    result: unknown,
+  ): Promise<void> {
+    const processHandle = this.process;
+    if (!processHandle) {
+      throw new CodexAppServerTransportError("app-server failed to start");
+    }
+
+    const payload = {
+      jsonrpc: "2.0",
+      id: requestId,
+      result,
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      processHandle.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+        if (error) {
+          reject(
+            new CodexAppServerTransportError(
+              `Failed to write app-server response: ${error.message}`,
+            ),
+          );
+          return;
+        }
+
         resolve();
       });
     });
@@ -664,6 +898,16 @@ class CodexAppServerClient {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function asNullableString(value: unknown): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  return asString(value);
 }
 
 function toReasoningEffort(value: unknown): CodexReasoningEffort | null {
@@ -702,6 +946,137 @@ function collectSupportedReasoningEfforts(value: unknown): CodexReasoningEffort[
   }
 
   return [...efforts];
+}
+
+function parseRequestUserInputParams(
+  value: unknown,
+): {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  questions: CodexUserInputQuestion[];
+} | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const threadId = asString(record.threadId)?.trim() ?? "";
+  const turnId = asString(record.turnId)?.trim() ?? "";
+  const itemId = asString(record.itemId)?.trim() ?? "";
+  if (!threadId || !turnId || !itemId) {
+    return null;
+  }
+
+  if (!Array.isArray(record.questions)) {
+    return null;
+  }
+
+  const questions = record.questions
+    .map((questionValue) => {
+      if (
+        !questionValue ||
+        typeof questionValue !== "object" ||
+        Array.isArray(questionValue)
+      ) {
+        return null;
+      }
+
+      const question = questionValue as Record<string, unknown>;
+      const id = asString(question.id)?.trim() ?? "";
+      const header = asString(question.header)?.trim() ?? "";
+      const prompt = asString(question.question)?.trim() ?? "";
+      if (!id || !prompt) {
+        return null;
+      }
+
+      const options = Array.isArray(question.options)
+        ? question.options
+            .map((optionValue) => {
+              if (
+                !optionValue ||
+                typeof optionValue !== "object" ||
+                Array.isArray(optionValue)
+              ) {
+                return null;
+              }
+              const option = optionValue as Record<string, unknown>;
+              const label = asString(option.label)?.trim() ?? "";
+              if (!label) {
+                return null;
+              }
+              return {
+                label,
+                description: asString(option.description) ?? "",
+              };
+            })
+            .filter((option): option is CodexUserInputQuestionOption => !!option)
+        : [];
+
+      return {
+        id,
+        header: header || "Question",
+        question: prompt,
+        isOther: question.isOther === true,
+        isSecret: question.isSecret === true,
+        options,
+      };
+    })
+    .filter((question): question is CodexUserInputQuestion => !!question);
+
+  if (questions.length === 0) {
+    return null;
+  }
+
+  return {
+    threadId,
+    turnId,
+    itemId,
+    questions,
+  };
+}
+
+function validateUserInputResponsePayload(
+  value: unknown,
+): asserts value is CodexUserInputResponsePayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("response must be an object");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (
+    !Object.prototype.hasOwnProperty.call(record, "answers") ||
+    !record.answers ||
+    typeof record.answers !== "object" ||
+    Array.isArray(record.answers)
+  ) {
+    throw new Error("response.answers must be an object");
+  }
+
+  const answers = record.answers as Record<string, unknown>;
+  for (const [questionId, answerValue] of Object.entries(answers)) {
+    if (!questionId.trim()) {
+      throw new Error("response.answers has an empty question id");
+    }
+    if (
+      !answerValue ||
+      typeof answerValue !== "object" ||
+      Array.isArray(answerValue)
+    ) {
+      throw new Error(`response.answers.${questionId} must be an object`);
+    }
+    const answerRecord = answerValue as Record<string, unknown>;
+    if (!Array.isArray(answerRecord.answers)) {
+      throw new Error(`response.answers.${questionId}.answers must be an array`);
+    }
+    for (const option of answerRecord.answers) {
+      if (typeof option !== "string") {
+        throw new Error(
+          `response.answers.${questionId}.answers entries must be strings`,
+        );
+      }
+    }
+  }
 }
 
 function extractTurnsFromThreadReadResult(result: unknown): AppServerTurnRecord[] {
@@ -761,6 +1136,33 @@ function shouldRetryAfterResume(error: unknown): boolean {
   );
 }
 
+function toCollaborationModePayload(
+  value: CodexCollaborationModeInput,
+): Record<string, unknown> {
+  const mode = value.mode.trim();
+  const settings = value.settings;
+
+  return {
+    mode,
+    settings: {
+      model:
+        settings && Object.prototype.hasOwnProperty.call(settings, "model")
+          ? settings.model ?? null
+          : null,
+      reasoning_effort:
+        settings &&
+        Object.prototype.hasOwnProperty.call(settings, "reasoningEffort")
+          ? settings.reasoningEffort ?? null
+          : null,
+      developer_instructions:
+        settings &&
+        Object.prototype.hasOwnProperty.call(settings, "developerInstructions")
+          ? settings.developerInstructions ?? null
+          : null,
+    },
+  };
+}
+
 function resolveCodexExecutablePath(): string {
   const envPath = process.env["CODEX_CLI_PATH"]?.trim();
   if (envPath) {
@@ -779,6 +1181,7 @@ let client: CodexAppServerClient | null = null;
 
 export function getCodexAppServerClient(): {
   listModels: (limit?: number) => Promise<CodexModelOption[]>;
+  listCollaborationModes: () => Promise<CodexCollaborationModeOption[]>;
   createThread: (input: CreateCodexThreadInput) => Promise<string>;
   sendMessage: (input: SendCodexMessageInput) => Promise<SendCodexMessageResult>;
   getThreadState: (
@@ -786,6 +1189,12 @@ export function getCodexAppServerClient(): {
     requestedTurnId?: string | null,
   ) => Promise<CodexThreadState>;
   interruptThread: (threadId: string) => Promise<void>;
+  listPendingUserInputRequests: (threadId: string) => CodexUserInputRequest[];
+  submitUserInput: (
+    threadId: string,
+    requestId: string,
+    response: CodexUserInputResponsePayload,
+  ) => Promise<void>;
 } {
   if (!client) {
     client = new CodexAppServerClient();
@@ -793,11 +1202,19 @@ export function getCodexAppServerClient(): {
 
   return {
     listModels: (limit?: number) => client!.listModels(limit),
+    listCollaborationModes: () => client!.listCollaborationModes(),
     createThread: (input: CreateCodexThreadInput) => client!.createThread(input),
     sendMessage: (input: SendCodexMessageInput) => client!.sendMessage(input),
     getThreadState: (threadId: string, requestedTurnId?: string | null) =>
       client!.getThreadState(threadId, requestedTurnId),
     interruptThread: (threadId: string) => client!.interruptThread(threadId),
+    listPendingUserInputRequests: (threadId: string) =>
+      client!.listPendingUserInputRequests(threadId),
+    submitUserInput: (
+      threadId: string,
+      requestId: string,
+      response: CodexUserInputResponsePayload,
+    ) => client!.submitUserInput(threadId, requestId, response),
   };
 }
 

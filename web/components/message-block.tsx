@@ -1,5 +1,9 @@
 import { useState, memo } from "react";
-import type { ConversationMessage, ContentBlock } from "@codex-run/api";
+import type {
+  ConversationMessage,
+  ContentBlock,
+  CodexUserInputRequest,
+} from "@codex-run/api";
 import hljs from "highlight.js/lib/core";
 import bashLanguage from "highlight.js/lib/languages/bash";
 import cppLanguage from "highlight.js/lib/languages/cpp";
@@ -58,6 +62,15 @@ import {
 
 interface MessageBlockProps {
   message: ConversationMessage;
+  onPlanAction?: (action: "implement" | "stay") => void;
+  pendingUserInputRequests?: CodexUserInputRequest[];
+  selectedUserInputAnswers?: Record<string, Record<string, string>>;
+  submittingUserInputRequestIds?: string[];
+  onSelectUserInputOption?: (
+    request: CodexUserInputRequest,
+    questionId: string,
+    optionLabel: string,
+  ) => void;
 }
 
 function buildToolMap(content: ContentBlock[]): Map<string, string> {
@@ -121,10 +134,84 @@ function JsonRenderer(props: { value: unknown }) {
 
 type JsonViewMode = "formatted" | "raw";
 
+type ProposedPlanParseResult = {
+  planMarkdown: string;
+  trailingMarkdown: string;
+};
+
+const PROPOSED_PLAN_BLOCK_REGEX =
+  /^<proposed_plan>\n([\s\S]*?)\n<\/proposed_plan>([\s\S]*)$/;
+
+function parseProposedPlanBlock(text: string): ProposedPlanParseResult | null {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const match = normalized.match(PROPOSED_PLAN_BLOCK_REGEX);
+  if (!match) {
+    return null;
+  }
+
+  const planMarkdown = match[1].trim();
+  if (!planMarkdown) {
+    return null;
+  }
+
+  return {
+    planMarkdown,
+    trailingMarkdown: match[2].trim(),
+  };
+}
+
+function ProposedPlanRenderer(props: {
+  planMarkdown: string;
+  trailingMarkdown: string;
+  onPlanAction?: (action: "implement" | "stay") => void;
+}) {
+  const { planMarkdown, trailingMarkdown, onPlanAction } = props;
+
+  return (
+    <div className="my-1 rounded-xl border border-sky-400/35 bg-sky-500/10 p-3">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-sky-200/90">
+        Plan Proposal
+      </div>
+      <MarkdownRenderer content={planMarkdown} />
+      {onPlanAction && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onPlanAction("implement")}
+            className="rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-1.5 text-[11px] text-emerald-100 transition-colors hover:bg-emerald-500/25"
+          >
+            Yes, implement this plan
+          </button>
+          <button
+            type="button"
+            onClick={() => onPlanAction("stay")}
+            className="rounded-lg border border-zinc-500/35 bg-zinc-500/10 px-2.5 py-1.5 text-[11px] text-zinc-200 transition-colors hover:bg-zinc-500/20"
+          >
+            No, stay in Plan mode
+          </button>
+        </div>
+      )}
+      {trailingMarkdown && (
+        <div className="mt-2 border-t border-sky-500/20 pt-2">
+          <MarkdownRenderer content={trailingMarkdown} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
-  const { message } = props;
+  const {
+    message,
+    onPlanAction,
+    pendingUserInputRequests = [],
+    selectedUserInputAnswers,
+    submittingUserInputRequestIds = [],
+    onSelectUserInputOption,
+  } = props;
 
   const isUser = message.type === "user";
+  const planActionHandler = isUser ? undefined : onPlanAction;
   const content = message.message?.content;
 
   const getTextBlocks = (): ContentBlock[] => {
@@ -172,6 +259,13 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
   const toolInputMap = Array.isArray(content)
     ? buildToolInputMap(content)
     : new Map<string, Record<string, unknown>>();
+  const pendingUserInputRequestByItemId = new Map<string, CodexUserInputRequest>();
+  for (const request of pendingUserInputRequests) {
+    if (request.itemId) {
+      pendingUserInputRequestByItemId.set(request.itemId, request);
+    }
+  }
+  const submittingRequestIdSet = new Set(submittingUserInputRequestIds);
 
   if (!hasText && hasAuxiliary) {
     return (
@@ -182,6 +276,11 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
             block={block}
             toolMap={toolMap}
             toolInputMap={toolInputMap}
+            onPlanAction={planActionHandler}
+            pendingUserInputRequestByItemId={pendingUserInputRequestByItemId}
+            selectedUserInputAnswers={selectedUserInputAnswers}
+            submittingUserInputRequestIds={submittingRequestIdSet}
+            onSelectUserInputOption={onSelectUserInputOption}
           />
         ))}
       </div>
@@ -203,7 +302,20 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
           }`}
         >
           {typeof content === "string" ? (
-            <MarkdownRenderer content={sanitizeText(content)} />
+            (() => {
+              const sanitized = sanitizeText(content);
+              const proposedPlan = parseProposedPlanBlock(sanitized);
+              if (proposedPlan) {
+                return (
+                  <ProposedPlanRenderer
+                    planMarkdown={proposedPlan.planMarkdown}
+                    trailingMarkdown={proposedPlan.trailingMarkdown}
+                    onPlanAction={planActionHandler}
+                  />
+                );
+              }
+              return <MarkdownRenderer content={sanitized} />;
+            })()
           ) : (
             <div className="flex flex-col gap-1">
               {visibleTextBlocks.map((block, index) => (
@@ -212,6 +324,11 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
                   block={block}
                   toolMap={toolMap}
                   toolInputMap={toolInputMap}
+                  onPlanAction={planActionHandler}
+                  pendingUserInputRequestByItemId={pendingUserInputRequestByItemId}
+                  selectedUserInputAnswers={selectedUserInputAnswers}
+                  submittingUserInputRequestIds={submittingRequestIdSet}
+                  onSelectUserInputOption={onSelectUserInputOption}
                 />
               ))}
             </div>
@@ -226,6 +343,11 @@ const MessageBlock = memo(function MessageBlock(props: MessageBlockProps) {
                 block={block}
                 toolMap={toolMap}
                 toolInputMap={toolInputMap}
+                onPlanAction={planActionHandler}
+                pendingUserInputRequestByItemId={pendingUserInputRequestByItemId}
+                selectedUserInputAnswers={selectedUserInputAnswers}
+                submittingUserInputRequestIds={submittingRequestIdSet}
+                onSelectUserInputOption={onSelectUserInputOption}
               />
             ))}
           </div>
@@ -239,6 +361,15 @@ interface ContentBlockRendererProps {
   block: ContentBlock;
   toolMap?: Map<string, string>;
   toolInputMap?: Map<string, Record<string, unknown>>;
+  onPlanAction?: (action: "implement" | "stay") => void;
+  pendingUserInputRequestByItemId?: Map<string, CodexUserInputRequest>;
+  selectedUserInputAnswers?: Record<string, Record<string, string>>;
+  submittingUserInputRequestIds?: Set<string>;
+  onSelectUserInputOption?: (
+    request: CodexUserInputRequest,
+    questionId: string,
+    optionLabel: string,
+  ) => void;
 }
 
 const TOOL_ICONS: Record<string, typeof Wrench> = {
@@ -738,7 +869,9 @@ function getTodoItemsFromInput(input: Record<string, unknown>): NormalizedTodoIt
 }
 
 function toAskQuestionInput(input: Record<string, unknown>): {
+  requestId?: string;
   questions: Array<{
+    id: string;
     header: string;
     question: string;
     options: Array<{ label: string; description: string }>;
@@ -751,7 +884,7 @@ function toAskQuestionInput(input: Record<string, unknown>): {
 
   const questions = input.questions
     .filter((question): question is Record<string, unknown> => isRecord(question))
-    .map((question) => {
+    .map((question, index) => {
       const options = Array.isArray(question.options)
         ? question.options
             .filter((option): option is Record<string, unknown> => isRecord(option))
@@ -766,6 +899,10 @@ function toAskQuestionInput(input: Record<string, unknown>): {
         : [];
 
       return {
+        id:
+          typeof question.id === "string" && question.id.trim().length > 0
+            ? question.id
+            : `question-${index}`,
         header:
           typeof question.header === "string" && question.header.trim().length > 0
             ? question.header
@@ -868,6 +1005,14 @@ function renderFormattedToolInput(
   input: Record<string, unknown>,
   embedded: boolean,
   hideHeader: boolean,
+  requestUserInputRequest?: CodexUserInputRequest,
+  selectedUserInputAnswers?: Record<string, string>,
+  submittingUserInputRequest = false,
+  onSelectUserInputOption?: (
+    request: CodexUserInputRequest,
+    questionId: string,
+    optionLabel: string,
+  ) => void,
 ): JSX.Element {
   const toolName = (block.name || "").toLowerCase();
   const rawInput = typeof input.raw === "string" ? input.raw : null;
@@ -1005,6 +1150,18 @@ function renderFormattedToolInput(
           input={normalizedInput}
           embedded={embedded}
           hideHeader={hideHeader}
+          selectedAnswers={selectedUserInputAnswers}
+          submitting={submittingUserInputRequest}
+          onSelectOption={
+            requestUserInputRequest && onSelectUserInputOption
+              ? (questionId, optionLabel) =>
+                  onSelectUserInputOption(
+                    requestUserInputRequest,
+                    questionId,
+                    optionLabel,
+                  )
+              : undefined
+          }
         />
       );
     }
@@ -1058,12 +1215,29 @@ function renderToolInput(
   input: Record<string, unknown>,
   viewMode: JsonViewMode,
   embedded: boolean,
+  requestUserInputRequest?: CodexUserInputRequest,
+  selectedUserInputAnswers?: Record<string, string>,
+  submittingUserInputRequest = false,
+  onSelectUserInputOption?: (
+    request: CodexUserInputRequest,
+    questionId: string,
+    optionLabel: string,
+  ) => void,
 ): JSX.Element {
   if (viewMode === "raw") {
     return <JsonRenderer value={getRawToolInputValue(block, input)} />;
   }
 
-  return renderFormattedToolInput(block, input, embedded, embedded);
+  return renderFormattedToolInput(
+    block,
+    input,
+    embedded,
+    embedded,
+    requestUserInputRequest,
+    selectedUserInputAnswers,
+    submittingUserInputRequest,
+    onSelectUserInputOption,
+  );
 }
 
 const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
@@ -1371,7 +1545,16 @@ function getToolResultRawValue(
 }
 
 function ContentBlockRenderer(props: ContentBlockRendererProps) {
-  const { block, toolMap, toolInputMap } = props;
+  const {
+    block,
+    toolMap,
+    toolInputMap,
+    onPlanAction,
+    pendingUserInputRequestByItemId,
+    selectedUserInputAnswers,
+    submittingUserInputRequestIds,
+    onSelectUserInputOption,
+  } = props;
   const [expanded, setExpanded] = useState(
     block.type === "tool_use" || block.type === "tool_result",
   );
@@ -1381,6 +1564,16 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
     const sanitized = sanitizeText(block.text);
     if (!sanitized) {
       return null;
+    }
+    const proposedPlan = parseProposedPlanBlock(sanitized);
+    if (proposedPlan) {
+      return (
+        <ProposedPlanRenderer
+          planMarkdown={proposedPlan.planMarkdown}
+          trailingMarkdown={proposedPlan.trailingMarkdown}
+          onPlanAction={onPlanAction}
+        />
+      );
     }
     return <MarkdownRenderer content={sanitized} />;
   }
@@ -1483,6 +1676,17 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
     const Icon = getToolIcon(block.name || "");
     const preview = getToolPreview(block.name || "", input);
     const toolName = block.name?.toLowerCase() || "";
+    const requestUserInputRequest =
+      toolName === "request_user_input" && block.id
+        ? pendingUserInputRequestByItemId?.get(block.id)
+        : undefined;
+    const selectedAnswersForRequest = requestUserInputRequest
+      ? selectedUserInputAnswers?.[requestUserInputRequest.requestId]
+      : undefined;
+    const submittingUserInputRequest = requestUserInputRequest
+      ? submittingUserInputRequestIds?.has(requestUserInputRequest.requestId) ===
+        true
+      : false;
 
     const shouldAutoExpand =
       toolName === "todowrite" ||
@@ -1555,7 +1759,16 @@ function ContentBlockRenderer(props: ContentBlockRendererProps) {
           </div>
           {isExpanded && hasInput && input && (
             <div className="border-t border-slate-500/20 px-2.5 py-2">
-              {renderToolInput(block, input, jsonViewMode, true)}
+              {renderToolInput(
+                block,
+                input,
+                jsonViewMode,
+                true,
+                requestUserInputRequest,
+                selectedAnswersForRequest,
+                submittingUserInputRequest,
+                onSelectUserInputOption,
+              )}
             </div>
           )}
         </div>

@@ -1,15 +1,28 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import type { ConversationMessage } from "@codex-run/api";
+import { useEffect, useState, useRef, useCallback, memo } from "react";
+import type {
+  ConversationMessage,
+  CodexUserInputRequest,
+  CodexUserInputResponsePayload,
+} from "@codex-run/api";
 import MessageBlock from "./message-block";
 import ScrollToBottomButton from "./scroll-to-bottom-button";
+import {
+  listCodexUserInputRequests,
+  respondCodexUserInputRequest,
+} from "../api";
 
 const MAX_RETRIES = 10;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30000;
 const SCROLL_THRESHOLD_PX = 100;
+const USER_INPUT_POLL_INTERVAL_MS = 1200;
 
 interface SessionViewProps {
   sessionId: string;
+  onPlanAction?: (
+    sessionId: string,
+    action: "implement" | "stay",
+  ) => void;
 }
 
 interface ConversationStreamPayload {
@@ -17,10 +30,18 @@ interface ConversationStreamPayload {
   nextOffset: number;
 }
 
-function SessionView(props: SessionViewProps) {
-  const { sessionId } = props;
+const SessionView = memo(function SessionView(props: SessionViewProps) {
+  const { sessionId, onPlanAction } = props;
 
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [pendingUserInputRequests, setPendingUserInputRequests] = useState<
+    CodexUserInputRequest[]
+  >([]);
+  const [selectedUserInputAnswers, setSelectedUserInputAnswers] = useState<
+    Record<string, Record<string, string>>
+  >({});
+  const [submittingUserInputRequestIds, setSubmittingUserInputRequestIds] =
+    useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -31,6 +52,7 @@ function SessionView(props: SessionViewProps) {
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
+  const submittingRequestIdsRef = useRef<Set<string>>(new Set());
 
   const connect = useCallback(() => {
     if (!mountedRef.current) {
@@ -90,6 +112,10 @@ function SessionView(props: SessionViewProps) {
     mountedRef.current = true;
     setLoading(true);
     setMessages([]);
+    setPendingUserInputRequests([]);
+    setSelectedUserInputAnswers({});
+    setSubmittingUserInputRequestIds([]);
+    submittingRequestIdsRef.current.clear();
     offsetRef.current = 0;
     retryCountRef.current = 0;
 
@@ -105,6 +131,136 @@ function SessionView(props: SessionViewProps) {
       }
     };
   }, [connect]);
+
+  const pollPendingUserInputRequests = useCallback(async () => {
+    try {
+      const requests = await listCodexUserInputRequests(sessionId);
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setPendingUserInputRequests(requests);
+      const activeIds = new Set(requests.map((request) => request.requestId));
+
+      setSelectedUserInputAnswers((previous) => {
+        const next: Record<string, Record<string, string>> = {};
+        for (const [requestId, answers] of Object.entries(previous)) {
+          if (activeIds.has(requestId)) {
+            next[requestId] = answers;
+          }
+        }
+        return next;
+      });
+
+      setSubmittingUserInputRequestIds((previous) =>
+        previous.filter((requestId) => activeIds.has(requestId)),
+      );
+      submittingRequestIdsRef.current = new Set(
+        [...submittingRequestIdsRef.current].filter((requestId) =>
+          activeIds.has(requestId),
+        ),
+      );
+    } catch {
+      // Keep UI state as-is on transient polling failures.
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    void pollPendingUserInputRequests();
+    const interval = setInterval(() => {
+      void pollPendingUserInputRequests();
+    }, USER_INPUT_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [pollPendingUserInputRequests]);
+
+  const submitUserInputResponse = useCallback(
+    async (
+      request: CodexUserInputRequest,
+      response: CodexUserInputResponsePayload,
+    ) => {
+      const requestId = request.requestId;
+      if (submittingRequestIdsRef.current.has(requestId)) {
+        return;
+      }
+      submittingRequestIdsRef.current.add(requestId);
+      setSubmittingUserInputRequestIds((previous) =>
+        previous.includes(requestId) ? previous : [...previous, requestId],
+      );
+
+      try {
+        await respondCodexUserInputRequest(sessionId, requestId, response);
+      } catch {
+        // Let polling keep the request visible if submission fails.
+      } finally {
+        submittingRequestIdsRef.current.delete(requestId);
+        setSubmittingUserInputRequestIds((previous) =>
+          previous.filter((id) => id !== requestId),
+        );
+        void pollPendingUserInputRequests();
+      }
+    },
+    [pollPendingUserInputRequests, sessionId],
+  );
+
+  const handleSelectUserInputOption = useCallback(
+    (
+      request: CodexUserInputRequest,
+      questionId: string,
+      optionLabel: string,
+    ) => {
+      if (!request.requestId || !questionId || !optionLabel) {
+        return;
+      }
+
+      if (submittingRequestIdsRef.current.has(request.requestId)) {
+        return;
+      }
+
+      if (request.questions.length <= 1) {
+        void submitUserInputResponse(request, {
+          answers: {
+            [questionId]: {
+              answers: [optionLabel],
+            },
+          },
+        });
+        return;
+      }
+
+      setSelectedUserInputAnswers((previous) => {
+        const currentAnswers = previous[request.requestId] ?? {};
+        const nextAnswers = {
+          ...currentAnswers,
+          [questionId]: optionLabel,
+        };
+
+        const allAnswered = request.questions.every(
+          (question) =>
+            typeof nextAnswers[question.id] === "string" &&
+            nextAnswers[question.id].trim().length > 0,
+        );
+
+        if (allAnswered) {
+          const payload: CodexUserInputResponsePayload = {
+            answers: {},
+          };
+          for (const question of request.questions) {
+            const answer = nextAnswers[question.id];
+            if (answer) {
+              payload.answers[question.id] = { answers: [answer] };
+            }
+          }
+          void submitUserInputResponse(request, payload);
+        }
+
+        return {
+          ...previous,
+          [request.requestId]: nextAnswers,
+        };
+      });
+    },
+    [submitUserInputResponse],
+  );
 
   const scrollToBottom = useCallback(() => {
     if (!lastMessageRef.current) {
@@ -144,6 +300,12 @@ function SessionView(props: SessionViewProps) {
   const chatMessages = visibleMessages.filter(
     (m) => m.type === "user" || m.type === "assistant"
   );
+  const handlePlanAction = useCallback(
+    (action: "implement" | "stay") => {
+      onPlanAction?.(sessionId, action);
+    },
+    [onPlanAction, sessionId],
+  );
 
   if (loading) {
     return (
@@ -182,7 +344,14 @@ function SessionView(props: SessionViewProps) {
                     : undefined
                 }
               >
-                <MessageBlock message={message} />
+                <MessageBlock
+                  message={message}
+                  onPlanAction={onPlanAction ? handlePlanAction : undefined}
+                  pendingUserInputRequests={pendingUserInputRequests}
+                  selectedUserInputAnswers={selectedUserInputAnswers}
+                  submittingUserInputRequestIds={submittingUserInputRequestIds}
+                  onSelectUserInputOption={handleSelectUserInputOption}
+                />
               </div>
             ))}
           </div>
@@ -199,6 +368,6 @@ function SessionView(props: SessionViewProps) {
       )}
     </div>
   );
-}
+});
 
 export default SessionView;
